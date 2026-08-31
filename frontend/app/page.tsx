@@ -55,6 +55,7 @@ type ReportData = {
 };
 type TaskResult = { task_id: string; status: Status; report_markdown?: string; report_json?: ReportData; error?: string };
 type AgentState = { status: "idle" | "running" | "done" | "error"; label: string };
+type TypingItem = { text: string; offset: number };
 
 const AGENTS: Array<{ key: AgentKey; title: string; shortTitle: string; subtitle: string; activeWhen: Status }> = [
   { key: "document_parser", title: "文档解析 Agent", shortTitle: "文档解析", subtitle: "文本与财务表格清洗", activeWhen: "parsing" },
@@ -343,7 +344,7 @@ function AgentPipeline({ currentStatus, agents }: { currentStatus: Status; agent
 
 function OutputStream({ outputs, connection }: { outputs: Record<string, string[]>; connection: ConnectionState }) {
   const entries = AGENTS.flatMap((agent) => (outputs[agent.key] ?? []).map((text) => ({ ...agent, text })));
-  return <section className="stream-panel"><div className="stream-head"><div><div className="stream-title"><span className="terminal-mark">›_</span> Agent 输出流</div><div className="stream-subtitle">实时事件 · 当前任务上下文</div></div><ConnectionBadge state={connection} /></div><div className="stream-body" aria-live="polite" aria-busy={connection === "live" || connection === "reconnecting"}>{entries.length === 0 ? <div className="stream-empty"><span className="stream-cursor" />等待 Agent 输出...</div> : <div className="stream-entries">{entries.map((entry, index) => <div key={`${entry.key}-${index}`} className="stream-entry"><div className="stream-entry-head"><span>{entry.shortTitle}</span><span className="stream-entry-index">#{String(index + 1).padStart(2, "0")}</span></div><div className="stream-entry-text">{entry.text}</div></div>)}</div>}</div></section>;
+  return <section className="stream-panel"><div className="stream-head"><div><div className="stream-title"><span className="terminal-mark">›_</span> Agent 输出流</div><div className="stream-subtitle">实时执行摘要 · 结果逐段输出</div></div><ConnectionBadge state={connection} /></div><div className="stream-body" aria-live="polite" aria-busy={connection === "live" || connection === "reconnecting"}>{entries.length === 0 ? <div className="stream-empty"><span className="stream-cursor" />等待 Agent 输出...</div> : <div className="stream-entries">{entries.map((entry, index) => <div key={`${entry.key}-${index}`} className="stream-entry"><div className="stream-entry-head"><span>{entry.shortTitle}</span><span className="stream-entry-index">#{String(index + 1).padStart(2, "0")}</span></div><div className="stream-entry-text">{entry.text}{index === entries.length - 1 && (connection === "live" || connection === "reconnecting") ? <span className="typing-cursor" aria-hidden="true" /> : null}</div></div>)}</div>}</div></section>;
 }
 
 function Snapshot({ result, status }: { result?: TaskResult; status: Status }) {
@@ -385,9 +386,43 @@ export default function HomePage() {
   const eventSource = useRef<EventSource | null>(null);
   const activeTaskRef = useRef<string | null>(null);
   const subscribeRef = useRef<(taskId: string, retry?: number) => void>(() => undefined);
+  const typingQueues = useRef<Record<string, TypingItem[]>>({});
+  const typingTimers = useRef<Record<string, ReturnType<typeof setTimeout> | undefined>>({});
 
   const closeStream = useCallback(() => { eventSource.current?.close(); eventSource.current = null; setConnection("idle"); }, []);
-  const resetPipeline = useCallback(() => { setAgents(EMPTY_AGENTS); setOutputs({}); setError(""); setConnection("idle"); }, []);
+  const typeOutput = useCallback((key: string) => {
+    const queue = typingQueues.current[key];
+    if (!queue?.length) {
+      typingTimers.current[key] = undefined;
+      return;
+    }
+    const item = queue[0];
+    const isNewEntry = item.offset === 0;
+    const step = Math.max(1, Math.ceil(item.text.length / 80));
+    item.offset = Math.min(item.text.length, item.offset + step);
+    setOutputs((current) => {
+      const next = [...(current[key] ?? [])];
+      if (isNewEntry) next.push("");
+      next[next.length - 1] = item.text.slice(0, item.offset);
+      return { ...current, [key]: next };
+    });
+    if (item.offset >= item.text.length) queue.shift();
+    typingTimers.current[key] = setTimeout(() => typeOutput(key), item.offset >= item.text.length ? 90 : 24);
+  }, []);
+
+  const enqueueOutput = useCallback((key: string, text: string) => {
+    const queue = typingQueues.current[key] ?? [];
+    queue.push({ text, offset: 0 });
+    typingQueues.current[key] = queue;
+    if (!typingTimers.current[key]) typeOutput(key);
+  }, [typeOutput]);
+
+  const resetPipeline = useCallback(() => {
+    Object.values(typingTimers.current).forEach((timer) => { if (timer) clearTimeout(timer); });
+    typingTimers.current = {};
+    typingQueues.current = {};
+    setAgents(EMPTY_AGENTS); setOutputs({}); setError(""); setConnection("idle");
+  }, []);
 
   const applyStatus = useCallback((next: Status) => {
     setStatus(next);
@@ -420,10 +455,10 @@ export default function HomePage() {
     const stream = new EventSource(`${API_BASE}/stream/${taskId}`); eventSource.current = stream;
     const parse = (event: MessageEvent) => { try { return JSON.parse(event.data) as Record<string, unknown>; } catch { return {}; } };
     stream.addEventListener("status", (event) => { const payload = parse(event as MessageEvent); if (typeof payload.status === "string") applyStatus(payload.status as Status); if (payload.error) setError(String(payload.error)); if (payload.status === "summary_finish" || payload.status === "error") { void loadResult(taskId); setConnection("idle"); stream.close(); } });
-     stream.addEventListener("agent", (event) => { const payload = parse(event as MessageEvent); const key = payload.agent as string; const text = formatAgentOutput(payload.output); if (!key) return; setOutputs((current) => ({ ...current, [key]: [...(current[key] ?? []), text] })); });
+     stream.addEventListener("agent", (event) => { const payload = parse(event as MessageEvent); const key = payload.agent as string; const text = formatAgentOutput(payload.output); if (!key) return; enqueueOutput(key, text); });
     stream.addEventListener("warning", (event) => { const payload = parse(event as MessageEvent); if (payload.message) setError(String(payload.message)); });
     stream.onerror = () => { stream.close(); if (activeTaskRef.current !== taskId) return; if (retry < 1) { setConnection("reconnecting"); setTimeout(() => subscribeRef.current(taskId, retry + 1), 1200); } else { setConnection("disconnected"); setError("实时连接已断开，请点击右上角刷新任务状态重试"); } };
-  }, [applyStatus, closeStream, loadResult]);
+   }, [applyStatus, closeStream, enqueueOutput, loadResult]);
 
   useEffect(() => { subscribeRef.current = subscribe; }, [subscribe]);
   useEffect(() => { void loadTasks(); return closeStream; }, [closeStream, loadTasks]);

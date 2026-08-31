@@ -419,6 +419,10 @@ class ReportAgents:
             await self.emit(state["task_id"], "warning", {"message": "未检索到相关财报片段"})
         return matches
 
+    async def _progress(self, task_id: str, agent: str, message: str) -> None:
+        """Emit an auditable execution summary, never hidden model reasoning."""
+        await self.emit(task_id, "agent", {"agent": agent, "output": f"> {message}"})
+
     @staticmethod
     def _evidence_text(chunks: List[Dict[str, Any]]) -> str:
         def field(chunk: Any, key: str, fallback: str = "") -> Any:
@@ -442,46 +446,59 @@ class ReportAgents:
     async def parsing(self, state: AgentState) -> AgentState:
         self.store.update_task(state["task_id"], "parsing")
         await self.emit(state["task_id"], "status", {"status": "parsing"})
+        await self._progress(state["task_id"], "document_parser", "正在读取 PDF 页面并提取文本与表格…")
         parsed = await self.pdf_tool.ainvoke(state["file_path"])
+        await self._progress(state["task_id"], "document_parser", f"已提取 {len(parsed['chunks'])} 个页级片段，正在清洗并建立来源索引…")
         try:
             vectors: List[List[float]] = []
             # Qwen's compatible embedding endpoint accepts at most 25 inputs per request.
             # Keep the batch below that limit so pgvector ingestion is real, not fallback-only.
             for start in range(0, len(parsed["chunks"]), 24):
                 batch = parsed["chunks"][start : start + 24]
+                await self._progress(state["task_id"], "document_parser", f"正在生成第 {start + 1}-{start + len(batch)} 个片段的向量…")
                 vectors.extend(await self.embeddings.aembed_documents([c["text"] for c in batch]))
             await asyncio.to_thread(self.store.save_chunks, state["task_id"], parsed["chunks"], vectors)
+            await self._progress(state["task_id"], "document_parser", f"向量已写入 Supabase，共 {len(vectors)} 个可检索片段。")
         except Exception as exc:
             await self.emit(state["task_id"], "warning", {"message": f"向量入库失败，将继续页级分析: {exc}"})
+            await self._progress(state["task_id"], "document_parser", "向量库暂不可用，将使用页级片段继续分析。")
         self.rag_tool.fallback_chunks[state["task_id"]] = parsed["chunks"]
+        await self._progress(state["task_id"], "document_parser", "文档解析完成，已准备好带页码溯源的证据。")
         await self.emit(state["task_id"], "agent", {"agent": "document_parser", "output": parsed["text"][:2000]})
         return {**state, "status": "parsing", "document_text": parsed["text"], "tables": parsed["tables"], "chunks": parsed["chunks"]}
 
     async def finance(self, state: AgentState) -> AgentState:
         self.store.update_task(state["task_id"], "finance_analyzing")
         await self.emit(state["task_id"], "status", {"status": "finance_analyzing"})
+        await self._progress(state["task_id"], "finance_analyst", "正在检索营收、净利润、现金流和毛利率相关片段…")
         evidence = await self._retrieve(state, "营收 净利润 经营活动现金流 毛利率 同比 环比 财务指标")
+        await self._progress(state["task_id"], "finance_analyst", f"已召回 {len(evidence)} 个证据片段，正在核对同比与环比数字…")
         result = await self._invoke_json(CHINESE_OUTPUT_RULES + """
 你是财务分析师Agent。只输出JSON对象，字段metrics(dict)、notes(array)、sources(array)。每个关键metric尽量附sources数组，引用必须来自给定片段的page/chunk_id，禁止编造页码。从以下证据提取营业收入、净利润、经营活动现金流、毛利率及同比/环比；缺失用null或“未披露”。指标名称必须使用简体中文，数值必须与原文一致。
 财报检索证据：
 """ + self._evidence_text(evidence), self.finance_parser)
         result.setdefault("sources", self._sources(evidence))
+        await self._progress(state["task_id"], "finance_analyst", "财务指标提取完成，正在整理每项指标的来源页码。")
         await self.emit(state["task_id"], "agent", {"agent": "finance_analyst", "output": result})
         return {**state, "finance": result}
 
     async def risk(self, state: AgentState) -> AgentState:
         self.store.update_task(state["task_id"], "risk_analyzing")
         await self.emit(state["task_id"], "status", {"status": "risk_analyzing"})
+        await self._progress(state["task_id"], "risk_reviewer", "正在检索负债、现金流、异常波动和审计意见片段…")
         evidence = await self._retrieve(state, "资产负债 现金流 异常 波动 关联交易 审计意见 风险")
+        await self._progress(state["task_id"], "risk_reviewer", f"已召回 {len(evidence)} 个证据片段，正在区分风险等级并核对证据…")
         result = await self._invoke_json(CHINESE_OUTPUT_RULES + """
 你是风险研判Agent。只输出JSON对象，字段risks(array，每项含level、title、evidence、suggestion、sources)、anomalies(array)、sources(array)。level使用“高/中/低”。风险标题、证据摘要、跟踪建议和异常描述必须使用简体中文；sources只能引用证据片段中的page/chunk_id，不得编造页码。
 财报检索证据：
 """ + self._evidence_text(evidence), self.risk_parser)
         result.setdefault("sources", self._sources(evidence))
+        await self._progress(state["task_id"], "risk_reviewer", "风险事项整理完成，关键判断均保留原文页码。")
         await self.emit(state["task_id"], "agent", {"agent": "risk_reviewer", "output": result})
         return {**state, "risks": result}
 
     async def summary(self, state: AgentState) -> AgentState:
+        await self._progress(state["task_id"], "industry_summary", "正在汇总财务指标与风险事项，生成中文研究结论…")
         prompt = CHINESE_OUTPUT_RULES + """
 你是行业对比与汇总Agent。只输出JSON对象，必须包含company、period、metrics、risks、summary、industry_comparison、sources。整合前面Agent的结果，所有结论、行业比较和 Markdown 正文必须使用简体中文；为关键结论保留sources(page/chunk_id)。不得给出买卖或股价预测建议。
 财务分析：
@@ -490,6 +507,7 @@ class ReportAgents:
 %s
 """ % (json.dumps(state.get("finance", {}), ensure_ascii=False), json.dumps(state.get("risks", {}), ensure_ascii=False))
         result = await self._invoke_json(prompt, self.report_parser)
+        await self._progress(state["task_id"], "industry_summary", "汇总完成，正在生成 Markdown 报告并写入任务记录…")
         finance_state = state.get("finance") if isinstance(state.get("finance"), dict) else {}
         risks_state = state.get("risks") if isinstance(state.get("risks"), dict) else {}
         result.setdefault("sources", finance_state.get("sources", []) + risks_state.get("sources", []))
