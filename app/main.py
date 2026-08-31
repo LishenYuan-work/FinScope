@@ -47,6 +47,21 @@ TaskStatus = Literal[
 ]
 
 
+# The API contract keeps English top-level JSON keys so the existing frontend
+# can render reports without a protocol change. All human-readable values
+# inside those keys must be Simplified Chinese, even when source filings are
+# written in English.
+CHINESE_OUTPUT_RULES = """
+输出语言与准确性要求（必须遵守）：
+1. 即使财报原文为英文，也必须先理解原文，最终所有自然语言内容使用简体中文。
+2. API 顶层 JSON 键名必须保持题目要求的英文协议键名（如 metrics、risks、summary、sources），不要改名；键名之外的指标名称、notes、风险 level/title/evidence/suggestion、summary、industry_comparison 及 Markdown 文本全部使用简体中文。
+3. company 输出中文公司名；如无法确定中文名，可写“官方英文名（中文名待确认）”，不要只输出英文公司名。period 使用中文表达（例如“2025年度”或“截至2025年3月31日的财年”）。
+4. 数字、币种、百分比、单位、page、chunk_id 和来源 ID 必须保持证据中的准确原样，不翻译或改写来源 ID，不得编造任何数字和页码。
+5. 不得输出股票买卖建议、目标价、股价预测或交易策略。
+6. 输出前自检：除固定 JSON 键名和来源 ID 外，不得出现英文句子；缺失信息填 null 或“未披露”，不要猜测。
+"""
+
+
 class AgentState(TypedDict, total=False):
     task_id: str
     file_path: str
@@ -300,12 +315,67 @@ class ReportAgents:
             try:
                 result = await self.llm.ainvoke(prompt)
                 content = result.content if hasattr(result, "content") else str(result)
-                return self._normalize_sources(parser.parse(content))
+                parsed = parser.parse(content)
+                return self._normalize_sources(self._normalize_chinese_fields(parsed))
             except Exception as exc:
                 last = exc
                 if attempt < retries:
                     await asyncio.sleep(2**attempt)
         raise RuntimeError(f"大模型或格式解析失败: {last}") from last
+
+    @staticmethod
+    def _normalize_chinese_fields(value: Dict[str, Any]) -> Dict[str, Any]:
+        """Normalize frequent English metric aliases without changing the API shape."""
+        metric_aliases = {
+            "revenue": "营业收入",
+            "total_revenue": "营业收入",
+            "operating_revenue": "营业收入",
+            "net_income": "净利润",
+            "net_profit": "净利润",
+            "gross_margin": "毛利率",
+            "gross_profit_margin": "毛利率",
+            "operating_cash_flow": "经营活动现金流",
+            "cash_flow_from_operations": "经营活动现金流",
+            "free_cash_flow": "自由现金流",
+            "operating_profit": "营业利润",
+            "operating_margin": "营业利润率",
+            "total_assets": "资产总额",
+            "total_liabilities": "负债总额",
+            "cash_and_equivalents": "现金及现金等价物",
+            "rd_expense": "研发费用",
+            "rd_expense_ratio": "研发费用率",
+        }
+        metrics = value.get("metrics")
+        if isinstance(metrics, dict):
+            normalized: Dict[str, Any] = {}
+            for name, metric_value in metrics.items():
+                alias = metric_aliases.get(str(name).strip().lower(), name)
+                normalized[str(alias)] = metric_value
+            value["metrics"] = normalized
+
+        risks = value.get("risks")
+        if isinstance(risks, list):
+            for risk in risks:
+                if not isinstance(risk, dict):
+                    continue
+                level = str(risk.get("level", "")).strip().lower()
+                risk["level"] = {"high": "高", "medium": "中", "low": "低", "critical": "高"}.get(level, risk.get("level", "中"))
+
+        company = value.get("company")
+        company_aliases = {
+            "alibaba group": "阿里巴巴集团",
+            "alibaba": "阿里巴巴集团",
+            "tencent holdings": "腾讯控股",
+            "tencent": "腾讯控股",
+            "baidu": "百度集团",
+            "baidu, inc.": "百度集团",
+        }
+        if isinstance(company, str):
+            value["company"] = company_aliases.get(company.strip().lower(), company)
+        period = value.get("period")
+        if isinstance(period, str):
+            value["period"] = re.sub(r"^FY\s*(\d{4})$", r"\1财年", period.strip(), flags=re.I)
+        return value
 
     @staticmethod
     def _normalize_sources(value: Any, key: str | None = None) -> Any:
@@ -369,7 +439,10 @@ class ReportAgents:
         self.store.update_task(state["task_id"], "finance_analyzing")
         await self.emit(state["task_id"], "status", {"status": "finance_analyzing"})
         evidence = await self._retrieve(state, "营收 净利润 经营活动现金流 毛利率 同比 环比 财务指标")
-        result = await self._invoke_json("""你是财务分析师。只输出JSON对象，字段metrics(dict)、notes(array)、sources(array)。每个关键metric尽量附sources数组，引用必须来自给定片段的page/chunk_id，禁止编造页码。从以下证据提取营收、净利润、现金流、毛利率及同比/环比；缺失用null。\n""" + self._evidence_text(evidence), self.finance_parser)
+        result = await self._invoke_json(CHINESE_OUTPUT_RULES + """
+你是财务分析师Agent。只输出JSON对象，字段metrics(dict)、notes(array)、sources(array)。每个关键metric尽量附sources数组，引用必须来自给定片段的page/chunk_id，禁止编造页码。从以下证据提取营业收入、净利润、经营活动现金流、毛利率及同比/环比；缺失用null或“未披露”。指标名称必须使用简体中文，数值必须与原文一致。
+财报检索证据：
+""" + self._evidence_text(evidence), self.finance_parser)
         result.setdefault("sources", self._sources(evidence))
         await self.emit(state["task_id"], "agent", {"agent": "finance_analyst", "output": result})
         return {**state, "finance": result}
@@ -378,13 +451,22 @@ class ReportAgents:
         self.store.update_task(state["task_id"], "risk_analyzing")
         await self.emit(state["task_id"], "status", {"status": "risk_analyzing"})
         evidence = await self._retrieve(state, "资产负债 现金流 异常 波动 关联交易 审计意见 风险")
-        result = await self._invoke_json("""你是风险研判师。只输出JSON对象，字段risks(array，每项含level、title、evidence、suggestion、sources)、anomalies(array)、sources(array)。sources只能引用证据片段中的page/chunk_id。\n""" + self._evidence_text(evidence), self.risk_parser)
+        result = await self._invoke_json(CHINESE_OUTPUT_RULES + """
+你是风险研判Agent。只输出JSON对象，字段risks(array，每项含level、title、evidence、suggestion、sources)、anomalies(array)、sources(array)。level使用“高/中/低”。风险标题、证据摘要、跟踪建议和异常描述必须使用简体中文；sources只能引用证据片段中的page/chunk_id，不得编造页码。
+财报检索证据：
+""" + self._evidence_text(evidence), self.risk_parser)
         result.setdefault("sources", self._sources(evidence))
         await self.emit(state["task_id"], "agent", {"agent": "risk_reviewer", "output": result})
         return {**state, "risks": result}
 
     async def summary(self, state: AgentState) -> AgentState:
-        prompt = """你是行业对比与汇总Agent。只输出JSON对象，必须包含company、period、metrics、risks、summary、industry_comparison、sources。整合输入并为关键结论保留sources(page/chunk_id)。不得给出买卖或股价预测建议。\n财务分析:\n%s\n风险分析:\n%s""" % (json.dumps(state.get("finance", {}), ensure_ascii=False), json.dumps(state.get("risks", {}), ensure_ascii=False))
+        prompt = CHINESE_OUTPUT_RULES + """
+你是行业对比与汇总Agent。只输出JSON对象，必须包含company、period、metrics、risks、summary、industry_comparison、sources。整合前面Agent的结果，所有结论、行业比较和 Markdown 正文必须使用简体中文；为关键结论保留sources(page/chunk_id)。不得给出买卖或股价预测建议。
+财务分析：
+%s
+风险分析：
+%s
+""" % (json.dumps(state.get("finance", {}), ensure_ascii=False), json.dumps(state.get("risks", {}), ensure_ascii=False))
         result = await self._invoke_json(prompt, self.report_parser)
         finance_state = state.get("finance") if isinstance(state.get("finance"), dict) else {}
         risks_state = state.get("risks") if isinstance(state.get("risks"), dict) else {}
