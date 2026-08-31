@@ -213,7 +213,8 @@ class SupabaseStore:
     def get_task(self, task_id: str) -> Dict[str, Any]:
         try:
             task = self.client.table("analysis_tasks").select("*").eq("id", task_id).single().execute().data
-            report = self.client.table("analysis_reports").select("markdown,report_json").eq("task_id", task_id).maybe_single().execute().data
+            report_response = self.client.table("analysis_reports").select("markdown,report_json").eq("task_id", task_id).maybe_single().execute()
+            report = getattr(report_response, "data", None) if report_response else None
         except Exception as exc:
             # Supabase's single() raises PGRST116 when no row exists.
             if getattr(exc, "code", None) == "PGRST116" or "0 rows" in str(exc).lower():
@@ -296,12 +297,26 @@ class ReportAgents:
             try:
                 result = await self.llm.ainvoke(prompt)
                 content = result.content if hasattr(result, "content") else str(result)
-                return parser.parse(content)
+                return self._normalize_sources(parser.parse(content))
             except Exception as exc:
                 last = exc
                 if attempt < retries:
                     await asyncio.sleep(2**attempt)
         raise RuntimeError(f"大模型或格式解析失败: {last}") from last
+
+    @staticmethod
+    def _normalize_sources(value: Any, key: str | None = None) -> Any:
+        """Convert model source ids such as p4-c1 into page-addressable objects."""
+        if isinstance(value, list):
+            return [ReportAgents._normalize_sources(item, key) for item in value]
+        if isinstance(value, dict):
+            return {name: ReportAgents._normalize_sources(item, name) for name, item in value.items()}
+        if key == "sources" and isinstance(value, str):
+            match = re.fullmatch(r"p(\d+)-(.+)", value.strip(), flags=re.IGNORECASE)
+            if match:
+                return {"page": int(match.group(1)), "chunk_id": value.strip()}
+            return {"chunk_id": value.strip()}
+        return value
 
     async def _retrieve(self, state: AgentState, query: str) -> List[Dict[str, Any]]:
         matches = await self.rag_tool.ainvoke({"task_id": state["task_id"], "query": query, "top_k": 8})
@@ -311,10 +326,23 @@ class ReportAgents:
 
     @staticmethod
     def _evidence_text(chunks: List[Dict[str, Any]]) -> str:
+        def field(chunk: Any, key: str, fallback: str = "") -> Any:
+            if isinstance(chunk, dict):
+                return chunk.get(key, fallback)
+            return fallback
+
         return "\n\n".join(
-            f"[source page={c.get('page')} chunk={c.get('chunk_id')}] {c.get('content', c.get('text', ''))}"
+            f"[source page={field(c, 'page', '?')} chunk={field(c, 'chunk_id', '?')}] {field(c, 'content') or field(c, 'text')}"
             for c in chunks
         )
+
+    @staticmethod
+    def _sources(chunks: List[Any]) -> List[Dict[str, Any]]:
+        return [
+            {"page": c.get("page"), "chunk_id": c.get("chunk_id")}
+            for c in chunks
+            if isinstance(c, dict)
+        ]
 
     async def parsing(self, state: AgentState) -> AgentState:
         self.store.update_task(state["task_id"], "parsing")
@@ -338,7 +366,7 @@ class ReportAgents:
         await self.emit(state["task_id"], "status", {"status": "finance_analyzing"})
         evidence = await self._retrieve(state, "营收 净利润 经营活动现金流 毛利率 同比 环比 财务指标")
         result = await self._invoke_json("""你是财务分析师。只输出JSON对象，字段metrics(dict)、notes(array)、sources(array)。每个关键metric尽量附sources数组，引用必须来自给定片段的page/chunk_id，禁止编造页码。从以下证据提取营收、净利润、现金流、毛利率及同比/环比；缺失用null。\n""" + self._evidence_text(evidence), self.finance_parser)
-        result.setdefault("sources", [{"page": c.get("page"), "chunk_id": c.get("chunk_id")} for c in evidence])
+        result.setdefault("sources", self._sources(evidence))
         await self.emit(state["task_id"], "agent", {"agent": "finance_analyst", "output": result})
         return {**state, "finance": result}
 
@@ -347,14 +375,16 @@ class ReportAgents:
         await self.emit(state["task_id"], "status", {"status": "risk_analyzing"})
         evidence = await self._retrieve(state, "资产负债 现金流 异常 波动 关联交易 审计意见 风险")
         result = await self._invoke_json("""你是风险研判师。只输出JSON对象，字段risks(array，每项含level、title、evidence、suggestion、sources)、anomalies(array)、sources(array)。sources只能引用证据片段中的page/chunk_id。\n""" + self._evidence_text(evidence), self.risk_parser)
-        result.setdefault("sources", [{"page": c.get("page"), "chunk_id": c.get("chunk_id")} for c in evidence])
+        result.setdefault("sources", self._sources(evidence))
         await self.emit(state["task_id"], "agent", {"agent": "risk_reviewer", "output": result})
         return {**state, "risks": result}
 
     async def summary(self, state: AgentState) -> AgentState:
         prompt = """你是行业对比与汇总Agent。只输出JSON对象，必须包含company、period、metrics、risks、summary、industry_comparison、sources。整合输入并为关键结论保留sources(page/chunk_id)。不得给出买卖或股价预测建议。\n财务分析:\n%s\n风险分析:\n%s""" % (json.dumps(state.get("finance", {}), ensure_ascii=False), json.dumps(state.get("risks", {}), ensure_ascii=False))
         result = await self._invoke_json(prompt, self.report_parser)
-        result.setdefault("sources", state.get("finance", {}).get("sources", []) + state.get("risks", {}).get("sources", []))
+        finance_state = state.get("finance") if isinstance(state.get("finance"), dict) else {}
+        risks_state = state.get("risks") if isinstance(state.get("risks"), dict) else {}
+        result.setdefault("sources", finance_state.get("sources", []) + risks_state.get("sources", []))
         markdown = self._to_markdown(result)
         self.store.save_report(state["task_id"], markdown, result)
         self.store.update_task(state["task_id"], "summary_finish")
@@ -370,13 +400,17 @@ class ReportAgents:
             lines.append(f"- **{name}**：{json.dumps(value, ensure_ascii=False)}")
         lines.extend(["", "## 风险与异常", ""])
         for risk in data.get("risks", []) if isinstance(data.get("risks"), list) else []:
-            lines.append(f"- [{risk.get('level', 'unknown')}] {risk.get('title', risk)}")
-            if risk.get("sources"):
-                source_labels = ", ".join("第%s页/%s" % (s.get("page"), s.get("chunk_id")) for s in risk["sources"])
+            if not isinstance(risk, dict):
+                lines.append(f"- [unknown] {risk}")
+                continue
+            lines.append(f"- [{risk.get('level', 'unknown')}] {risk.get('title', '待确认事项')}")
+            if isinstance(risk.get("sources"), list):
+                source_labels = ", ".join("第%s页/%s" % (s.get("page"), s.get("chunk_id")) for s in risk["sources"] if isinstance(s, dict))
                 lines.append(f"  - 来源：{source_labels}")
         lines.extend(["", "## 结论", "", str(data.get("summary", "")), "", "## 来源片段", ""])
         for source in data.get("sources", []) if isinstance(data.get("sources"), list) else []:
-            lines.append(f"- 第{source.get('page')}页/{source.get('chunk_id')}")
+            if isinstance(source, dict):
+                lines.append(f"- 第{source.get('page')}页/{source.get('chunk_id')}")
         return "\n".join(lines)
 
 

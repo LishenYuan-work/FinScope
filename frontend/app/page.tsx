@@ -259,7 +259,7 @@ function OfficialReportsPanel({ onLoadExample, loadingPath }: { onLoadExample: (
         <div className="official-report-period">{report.period}</div>
         <p>{report.description}</p>
         <div className="official-report-actions">
-          <a href={report.localPath} download onClick={(event) => { event.preventDefault(); if (loadingPath !== report.localPath) onLoadExample(report); }} className="official-report-link" aria-label={`载入${report.company}示例年报`}>{loadingPath === report.localPath ? <CircleNotch size={15} className="spin" /> : <FileText size={15} />} {loadingPath === report.localPath ? "载入中" : "直接载入示例"} <ArrowUpRight size={14} /></a>
+          <button type="button" onClick={() => { if (loadingPath !== report.localPath) onLoadExample(report); }} className="official-report-link" aria-label={`载入${report.company}示例年报`}>{loadingPath === report.localPath ? <CircleNotch size={15} className="spin" /> : <FileText size={15} />} {loadingPath === report.localPath ? "载入中" : "直接载入示例"} <ArrowUpRight size={14} /></button>
           <a href={report.reportUrl} target="_blank" rel="noreferrer" className="official-source-link">官方原件</a>
           <a href={report.sourceUrl} target="_blank" rel="noreferrer" className="official-source-link">来源页</a>
         </div>
