@@ -11,7 +11,7 @@
 ## 真实联调前的人工步骤
 
 1. 在 Supabase SQL Editor 中执行根目录的 `schema.sql`，启用 `vector` 扩展并创建表和检索函数。
-2. 创建 Supabase 项目，复制 Project URL 和 service role key。
+2. 创建 Supabase 项目，复制 Project URL 和后端专用 secret/service_role key（新版 `sb_secret_...` 可直接使用）。
 3. 在 DeepSeek 或阿里云百炼（DashScope）控制台创建 API key。密钥只写入本地 `.env`，不要提交 GitHub。
 4. 复制环境模板并填写真实值：
 

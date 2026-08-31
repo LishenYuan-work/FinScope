@@ -2,7 +2,7 @@ fastapi==0.115.6
 uvicorn[standard]==0.34.0
 python-multipart==0.0.20
 python-dotenv==1.0.1
-supabase==2.11.0
+supabase==2.16.0
 langgraph==0.2.62
 langchain==0.3.14
 langchain-core==0.3.31
