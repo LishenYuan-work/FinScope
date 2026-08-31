@@ -176,10 +176,22 @@ function metricNumber(value: unknown): number | null {
     for (const key of ["value", "current", "amount", "number"]) {
       const candidate = objectValue[key];
       if (typeof candidate === "number" && Number.isFinite(candidate)) return candidate;
-      if (typeof candidate === "string" && candidate.trim() && Number.isFinite(Number(candidate.replaceAll(",", "")))) return Number(candidate.replaceAll(",", ""));
+      if (typeof candidate === "string") {
+        const match = candidate.match(/[-+]?\d[\d,]*(?:\.\d+)?/);
+        if (match) return Number(match[0].replaceAll(",", ""));
+      }
+    }
+    for (const candidate of Object.values(objectValue)) {
+      if (typeof candidate === "string") {
+        const match = candidate.match(/[-+]?\d[\d,]*(?:\.\d+)?/);
+        if (match) return Number(match[0].replaceAll(",", ""));
+      }
     }
   }
-  if (typeof value === "string" && value.trim() && Number.isFinite(Number(value.replaceAll(",", "")))) return Number(value.replaceAll(",", ""));
+  if (typeof value === "string") {
+    const match = value.match(/^\s*[-+]?\d[\d,]*(?:\.\d+)?/);
+    if (match) return Number(match[0].replaceAll(",", ""));
+  }
   return null;
 }
 
@@ -187,10 +199,66 @@ function metricLabel(value: unknown) {
   const numeric = metricNumber(value);
   if (typeof value === "object" && value !== null) {
     const item = value as Record<string, unknown>;
+    for (const key of ["value", "current", "amount", "number"]) {
+      if (typeof item[key] === "string" && item[key].trim()) return item[key];
+    }
+    const firstText = Object.values(item).find((candidate) => typeof candidate === "string" && candidate.trim());
+    if (typeof firstText === "string" && numeric !== null) return firstText;
     const unit = typeof item.unit === "string" ? ` ${item.unit}` : "";
     return `${numeric === null ? "暂无" : numeric.toLocaleString("zh-CN")}${unit}`;
   }
   return numeric === null ? "暂无" : numeric.toLocaleString("zh-CN");
+}
+
+const OUTPUT_LABELS: Record<string, string> = {
+  metrics: "核心指标",
+  notes: "分析备注",
+  risks: "风险事项",
+  anomalies: "异常信号",
+  sources: "来源",
+  level: "等级",
+  title: "标题",
+  evidence: "证据",
+  suggestion: "跟踪建议",
+  page: "页码",
+  chunk_id: "片段编号",
+  description: "说明",
+};
+
+function formatSource(source: unknown): string {
+  if (!source || typeof source !== "object") return String(source ?? "未提供");
+  const item = source as Record<string, unknown>;
+  const page = item.page !== undefined ? `第 ${item.page} 页` : "页码未知";
+  const chunk = item.chunk_id ? ` / ${item.chunk_id}` : "";
+  return `${page}${chunk}`;
+}
+
+function formatAgentOutput(value: unknown, depth = 0): string {
+  if (typeof value === "string") return value;
+  if (value === null || value === undefined) return "未披露";
+  const indent = "  ".repeat(depth);
+  if (Array.isArray(value)) {
+    if (value.length === 0) return "无";
+    return value.map((item, index) => {
+      if (item && typeof item === "object" && !Array.isArray(item)) {
+        return `${indent}${index + 1}.\n${formatAgentOutput(item, depth + 1)}`;
+      }
+      return `${indent}${index + 1}. ${formatAgentOutput(item, depth)}`;
+    }).join("\n");
+  }
+  if (typeof value === "object") {
+    return Object.entries(value as Record<string, unknown>).map(([key, item]) => {
+      if (key === "sources" && Array.isArray(item)) {
+        return `${indent}来源：${item.map(formatSource).join("；") || "未提供"}`;
+      }
+      const label = OUTPUT_LABELS[key] ?? key;
+      if (item && typeof item === "object") {
+        return `${indent}${label}：\n${formatAgentOutput(item, depth + 1)}`;
+      }
+      return `${indent}${label}：${formatAgentOutput(item, depth)}`;
+    }).join("\n");
+  }
+  return String(value);
 }
 
 function StatusChip({ status }: { status: Status }) {
@@ -284,7 +352,7 @@ function Snapshot({ result, status }: { result?: TaskResult; status: Status }) {
 
 function MetricCards({ report }: { report?: ReportData }) {
   const entries = Object.entries(report?.metrics ?? {}).slice(0, 6);
-  return <section className="metrics-section"><div className="section-heading metrics-heading"><div><div className="eyebrow muted-eyebrow"><ChartLineUp size={14} weight="bold" /> KEY METRICS</div><h2>核心财务指标</h2><p>从结构化 JSON 提取，可直接用于图表渲染。</p></div><span className="metric-count">{String(entries.length).padStart(2, "0")} / 06</span></div><div className="metrics-grid">{entries.length === 0 ? <div className="empty-metric">任务完成后，核心指标会显示在这里。</div> : entries.map(([key, value], index) => { const objectValue = typeof value === "object" && value !== null ? value as Record<string, unknown> : null; const yoy = typeof objectValue?.yoy === "string" ? objectValue.yoy : undefined; return <div key={key} className={`metric-card ${index === 0 ? "metric-primary" : ""}`}><div className="metric-card-top"><span>{key}</span><span className="metric-index">0{index + 1}</span></div><div className="metric-value">{metricLabel(value)}</div>{yoy ? <div className="metric-change"><ArrowUpRight size={14} />同比 {yoy}</div> : <div className="metric-source">年报结构化字段</div>}</div>; })}</div></section>;
+  return <section className="metrics-section"><div className="section-heading metrics-heading"><div><div className="eyebrow muted-eyebrow"><ChartLineUp size={14} weight="bold" /> KEY METRICS</div><h2>核心财务指标</h2><p>从结构化 JSON 提取，可直接用于图表渲染。</p></div><span className="metric-count">{String(entries.length).padStart(2, "0")} / 06</span></div><div className="metrics-grid">{entries.length === 0 ? <div className="empty-metric">任务完成后，核心指标会显示在这里。</div> : entries.map(([key, value], index) => { const objectValue = typeof value === "object" && value !== null ? value as Record<string, unknown> : null; const yoy = typeof objectValue?.yoy === "string" ? objectValue.yoy : typeof objectValue?.["同比变化"] === "string" ? objectValue["同比变化"] as string : undefined; return <div key={key} className={`metric-card ${index === 0 ? "metric-primary" : ""}`}><div className="metric-card-top"><span>{key}</span><span className="metric-index">0{index + 1}</span></div><div className="metric-value">{metricLabel(value)}</div>{yoy ? <div className="metric-change"><ArrowUpRight size={14} />同比 {yoy}</div> : <div className="metric-source">年报结构化字段</div>}</div>; })}</div></section>;
 }
 
 function ChartsPanel({ report }: { report?: ReportData }) {
@@ -352,7 +420,7 @@ export default function HomePage() {
     const stream = new EventSource(`${API_BASE}/stream/${taskId}`); eventSource.current = stream;
     const parse = (event: MessageEvent) => { try { return JSON.parse(event.data) as Record<string, unknown>; } catch { return {}; } };
     stream.addEventListener("status", (event) => { const payload = parse(event as MessageEvent); if (typeof payload.status === "string") applyStatus(payload.status as Status); if (payload.error) setError(String(payload.error)); if (payload.status === "summary_finish" || payload.status === "error") { void loadResult(taskId); setConnection("idle"); stream.close(); } });
-    stream.addEventListener("agent", (event) => { const payload = parse(event as MessageEvent); const key = payload.agent as string; const text = typeof payload.output === "string" ? payload.output : JSON.stringify(payload.output, null, 2); if (!key) return; setOutputs((current) => ({ ...current, [key]: [...(current[key] ?? []), text] })); });
+     stream.addEventListener("agent", (event) => { const payload = parse(event as MessageEvent); const key = payload.agent as string; const text = formatAgentOutput(payload.output); if (!key) return; setOutputs((current) => ({ ...current, [key]: [...(current[key] ?? []), text] })); });
     stream.addEventListener("warning", (event) => { const payload = parse(event as MessageEvent); if (payload.message) setError(String(payload.message)); });
     stream.onerror = () => { stream.close(); if (activeTaskRef.current !== taskId) return; if (retry < 1) { setConnection("reconnecting"); setTimeout(() => subscribeRef.current(taskId, retry + 1), 1200); } else { setConnection("disconnected"); setError("实时连接已断开，请点击右上角刷新任务状态重试"); } };
   }, [applyStatus, closeStream, loadResult]);

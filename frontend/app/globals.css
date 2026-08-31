@@ -171,7 +171,7 @@ button:focus-visible, [role="button"]:focus-visible { outline: 2px solid var(--a
 .stream-entry { padding-left: 13px; border-left: 1px solid rgba(112, 213, 177, .55); }
 .stream-entry-head { display: flex; justify-content: space-between; color: #8fd8bd; font-size: 10px; font-weight: 700; letter-spacing: .08em; }
 .stream-entry-index { color: rgba(227,241,244,.3); font-family: "SF Mono", "Geist Mono", monospace; font-weight: 400; }
-.stream-entry-text { margin-top: 6px; color: rgba(236, 247, 247, .73); font-size: 11px; line-height: 1.7; white-space: pre-wrap; word-break: break-word; }
+.stream-entry-text { margin-top: 6px; color: rgba(236, 247, 247, .73); font-size: 11px; line-height: 1.7; white-space: pre-wrap; word-break: break-word; overflow-wrap: anywhere; }
 .snapshot-panel { padding: 25px 26px 21px; }
 .snapshot-head { display: flex; align-items: flex-start; justify-content: space-between; }
 .snapshot-arrow { color: #a9bac0; }

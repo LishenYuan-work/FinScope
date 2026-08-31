@@ -505,13 +505,46 @@ class ReportAgents:
         lines = ["# 投研分析报告", "", f"- 公司：{data.get('company', '未识别')}", f"- 期间：{data.get('period', '未识别')}", "", "## 核心指标", ""]
         metrics = data.get("metrics", {})
         for name, value in metrics.items() if isinstance(metrics, dict) else []:
-            lines.append(f"- **{name}**：{json.dumps(value, ensure_ascii=False)}")
+            if not isinstance(value, dict):
+                lines.append(f"- **{name}**：{value if value is not None else '未披露'}")
+                continue
+            lines.append(f"- **{name}**")
+            for metric_name, metric_value in value.items():
+                if metric_name == "sources":
+                    continue
+                display_name = {
+                    "value": "数值",
+                    "current": "当前值",
+                    "amount": "金额",
+                    "number": "数值",
+                    "unit": "单位",
+                    "yoy": "同比",
+                    "qoq": "环比",
+                    "说明": "说明",
+                }.get(str(metric_name), str(metric_name))
+                if isinstance(metric_value, (dict, list)):
+                    rendered = json.dumps(metric_value, ensure_ascii=False)
+                else:
+                    rendered = "未披露" if metric_value is None else str(metric_value)
+                lines.append(f"  - {display_name}：{rendered}")
+            if isinstance(value.get("sources"), list):
+                source_labels = ", ".join(
+                    "第%s页/%s" % (source.get("page"), source.get("chunk_id"))
+                    for source in value["sources"]
+                    if isinstance(source, dict)
+                )
+                if source_labels:
+                    lines.append(f"  - 来源：{source_labels}")
         lines.extend(["", "## 风险与异常", ""])
         for risk in data.get("risks", []) if isinstance(data.get("risks"), list) else []:
             if not isinstance(risk, dict):
                 lines.append(f"- [unknown] {risk}")
                 continue
             lines.append(f"- [{risk.get('level', 'unknown')}] {risk.get('title', '待确认事项')}")
+            if risk.get("evidence"):
+                lines.append(f"  - 证据：{risk['evidence']}")
+            if risk.get("suggestion"):
+                lines.append(f"  - 跟踪建议：{risk['suggestion']}")
             if isinstance(risk.get("sources"), list):
                 source_labels = ", ".join("第%s页/%s" % (s.get("page"), s.get("chunk_id")) for s in risk["sources"] if isinstance(s, dict))
                 lines.append(f"  - 来源：{source_labels}")
