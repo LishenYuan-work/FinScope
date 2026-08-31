@@ -369,11 +369,14 @@ export default function HomePage() {
   const loadExample = async (report: OfficialReport) => {
     setExampleLoadingPath(report.localPath);
     setError("");
+    const filename = `${report.company}_${report.period.replaceAll(" ", "_")}.pdf`;
+    // Show immediate feedback while the bundled PDF is read from the same-origin static file.
+    setFile(new File([], filename, { type: "application/pdf" }));
     try {
       const response = await fetch(report.localPath);
       if (!response.ok) throw new Error("示例文件加载失败，请重新启动前端服务");
       const blob = await response.blob();
-      setFile(new File([blob], `${report.company}_${report.period.replaceAll(" ", "_")}.pdf`, { type: "application/pdf" }));
+      setFile(new File([blob], filename, { type: "application/pdf" }));
       closeStream();
       setSelected(null);
       setResult(undefined);
