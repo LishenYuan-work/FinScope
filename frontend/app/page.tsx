@@ -111,6 +111,55 @@ const DEMO_AGENTS: Record<AgentKey, AgentState> = {
   industry_summary: { status: "done", label: "已完成" },
 };
 
+type OfficialReport = {
+  company: string;
+  ticker: string;
+  period: string;
+  format: string;
+  description: string;
+  sourceLabel: string;
+  sourceUrl: string;
+  reportUrl: string;
+  accent: string;
+};
+
+// Official links are reference-only. The app still analyzes PDFs selected by the user.
+const OFFICIAL_REPORTS: OfficialReport[] = [
+  {
+    company: "阿里巴巴集团",
+    ticker: "BABA / 9988.HK",
+    period: "FY 2025",
+    format: "英文 PDF",
+    description: "截至 2025 年 3 月 31 日的财年年报。",
+    sourceLabel: "Alibaba Group Investor Relations",
+    sourceUrl: "https://www.alibabagroup.com/en-US/ir-financial-reports-financial-results",
+    reportUrl: "https://data.alibabagroup.com/ecms-files/1514443390/dbeaef58-eac8-4c00-9fdf-e361a5841078/Alibaba%20Group%20Holding%20Limited%20Fiscal%20Year%202025%20Annual%20Report.pdf",
+    accent: "orange",
+  },
+  {
+    company: "腾讯控股",
+    ticker: "0700.HK",
+    period: "2025 Annual Report",
+    format: "英文 PDF",
+    description: "腾讯投资者关系站发布的 2025 年度报告。",
+    sourceLabel: "Tencent Investor Relations",
+    sourceUrl: "https://www.tencent.com/investors/financial-reports/",
+    reportUrl: "https://static.www.tencent.com/uploads/2025/08/26/d1d2fb988f5e910e254b3abb41dadb0f.pdf",
+    accent: "blue",
+  },
+  {
+    company: "百度集团",
+    ticker: "BIDU",
+    period: "FY 2025",
+    format: "SEC 20-F（HTML）",
+    description: "百度 2025 财年的美国证券交易委员会年度报告备案。",
+    sourceLabel: "SEC EDGAR official filing",
+    sourceUrl: "https://ir.baidu.com/financial-information/sec-filings",
+    reportUrl: "https://www.sec.gov/Archives/edgar/data/1329099/000119312526109289/d38065d20f.htm",
+    accent: "violet",
+  },
+];
+
 function formatDate(value?: string) {
   if (!value) return "刚刚";
   return new Intl.DateTimeFormat("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }).format(new Date(value));
@@ -185,6 +234,33 @@ function UploadPanel({ file, busy, onFile, onUpload, onClear }: { file: File | n
     <div className="upload-panel-top"><div><div className="eyebrow"><CloudArrowUp size={14} weight="bold" /> DOCUMENT INTAKE</div><h2>把一份年报，变成一份研究判断。</h2><p>上传上市公司 PDF 年报，四个专职 Agent 将提取指标、识别风险并生成可溯源投研报告。</p></div><div className="upload-stat"><span className="stat-number">01</span><span className="stat-label">single PDF<br />per analysis</span></div></div>
     <div className="upload-dropzone" role="button" tabIndex={0} onKeyDown={(event) => { if ((event.key === "Enter" || event.key === " ") && !file) { event.preventDefault(); inputRef.current?.click(); } }} onClick={() => !file && inputRef.current?.click()}><input ref={inputRef} type="file" accept="application/pdf,.pdf" className="hidden-input" onChange={(event) => accept(event.target.files?.[0])} />{file ? <div className="selected-file"><div className="file-symbol"><FileText size={23} weight="bold" /></div><div className="selected-file-info"><strong>{file.name}</strong><span>{(file.size / 1024 / 1024).toFixed(2)} MB · PDF document</span></div><button aria-label="移除文件" className="clear-file" onClick={(event) => { event.stopPropagation(); onClear(); }}><X size={18} /></button></div> : <div className="dropzone-empty"><div className="upload-orbit"><CloudArrowUp size={25} weight="light" /></div><div><strong>拖拽年报至此</strong><span>或点击从本地选择 PDF</span></div><div className="dropzone-hint">最大 50 MB · 仅处理用户上传文件</div></div>}</div>
     <div className="upload-panel-bottom"><div className="privacy-note"><SealCheck size={15} weight="fill" /> 上传内容通过已配置的 FastAPI 接口处理</div>{file && <button disabled={busy} className="gradient-button" onClick={onUpload}>{busy ? <CircleNotch size={17} className="spin" /> : <ArrowUpRight size={17} />} {busy ? "创建任务中" : "开始分析"}</button>}</div>
+  </section>;
+}
+
+function OfficialReportsPanel() {
+  return <section className="official-reports-panel no-print" aria-labelledby="official-reports-title">
+    <div className="section-heading official-reports-heading">
+      <div>
+        <div className="eyebrow muted-eyebrow"><BookOpenText size={14} weight="bold" /> OFFICIAL REFERENCES</div>
+        <h2 id="official-reports-title">2025 年报示例</h2>
+        <p>从官方来源下载后拖入上方上传区，平台只处理你主动选择的本地 PDF。</p>
+      </div>
+      <span className="official-reports-note">3 SOURCES</span>
+    </div>
+    <div className="official-reports-grid">
+      {OFFICIAL_REPORTS.map((report) => <article key={report.company} className={`official-report-card accent-${report.accent}`}>
+        <div className="official-report-card-top"><div className="official-report-logo">{report.company.slice(0, 1)}</div><span className="official-report-format">{report.format}</span></div>
+        <div className="official-report-company">{report.company}</div>
+        <div className="official-report-ticker">{report.ticker}</div>
+        <div className="official-report-period">{report.period}</div>
+        <p>{report.description}</p>
+        <div className="official-report-actions">
+          <a href={report.reportUrl} target="_blank" rel="noreferrer" className="official-report-link"><FileText size={15} />打开年报 <ArrowUpRight size={14} /></a>
+          <a href={report.sourceUrl} target="_blank" rel="noreferrer" className="official-source-link">来源页</a>
+        </div>
+        <div className="official-report-source"><LinkSimple size={12} /> {report.sourceLabel}</div>
+      </article>)}
+    </div>
   </section>;
 }
 
@@ -288,5 +364,5 @@ export default function HomePage() {
   const upload = async () => { if (!file) return; setBusy(true); setError(""); const body = new FormData(); body.append("file", file); try { const response = await fetch(`${API_BASE}/tasks`, { method: "POST", body }); if (!response.ok) throw new Error((await response.text()) || "上传失败"); const created = (await response.json()) as { task_id: string; status: Status }; const task: TaskSummary = { id: created.task_id, filename: file.name, status: created.status, created_at: new Date().toISOString() }; setTasks((current) => [task, ...current]); setSelected(task); setResult(undefined); resetPipeline(); setStatus("pending"); subscribe(created.task_id); } catch (cause) { setError(cause instanceof Error ? cause.message : "上传失败"); } finally { setBusy(false); } };
 
   const headline = selected ? selected.filename : "从年报开始，建立你的研究判断";
-  return <main className="app-shell"><ResearchSidebar tasks={tasks} selectedId={selected?.id} open={sidebarOpen} onSelect={chooseTask} onNew={newAnalysis} onClose={() => setSidebarOpen(false)} /><div className="main-column"><header className="topbar no-print"><div className="topbar-inner"><button aria-label="打开历史任务" className="mobile-menu-button" onClick={() => setSidebarOpen(true)}><SidebarSimple size={20} /></button><div className="topbar-context"><div className="topbar-kicker"><span className="kicker-line" /> AI 财报多 Agent 投研分析平台 {DEMO_MODE && <span className="demo-badge">DEMO DATA</span>}</div><h1>{headline}</h1></div><div className="topbar-actions">{selected && <><StatusChip status={status} /><button aria-label="刷新任务" className="icon-button" onClick={() => void refresh()}><ArrowClockwise size={18} /></button></>}</div></div></header><div className="page-content">{error && <div className="error-banner no-print"><WarningCircle size={18} weight="fill" /><span>{error}</span><button aria-label="关闭错误提示" onClick={() => setError("")}><X size={15} /></button></div>}{!selected && <UploadPanel file={file} busy={busy} onFile={setFile} onUpload={upload} onClear={() => setFile(null)} />}{selected && <AgentPipeline currentStatus={status} agents={agents} />}<div className="stream-grid"><OutputStream outputs={outputs} connection={connection} /><Snapshot result={result} status={status} /></div><MetricCards report={result?.report_json} /><ChartsPanel report={result?.report_json} /><RiskInsights report={result?.report_json} /><ReportPreview result={result} /></div></div></main>;
+  return <main className="app-shell"><ResearchSidebar tasks={tasks} selectedId={selected?.id} open={sidebarOpen} onSelect={chooseTask} onNew={newAnalysis} onClose={() => setSidebarOpen(false)} /><div className="main-column"><header className="topbar no-print"><div className="topbar-inner"><button aria-label="打开历史任务" className="mobile-menu-button" onClick={() => setSidebarOpen(true)}><SidebarSimple size={20} /></button><div className="topbar-context"><div className="topbar-kicker"><span className="kicker-line" /> AI 财报多 Agent 投研分析平台 {DEMO_MODE && <span className="demo-badge">DEMO DATA</span>}</div><h1>{headline}</h1></div><div className="topbar-actions">{selected && <><StatusChip status={status} /><button aria-label="刷新任务" className="icon-button" onClick={() => void refresh()}><ArrowClockwise size={18} /></button></>}</div></div></header><div className="page-content">{error && <div className="error-banner no-print"><WarningCircle size={18} weight="fill" /><span>{error}</span><button aria-label="关闭错误提示" onClick={() => setError("")}><X size={15} /></button></div>}{!selected && <><UploadPanel file={file} busy={busy} onFile={setFile} onUpload={upload} onClear={() => setFile(null)} /><OfficialReportsPanel /></>}{selected && <AgentPipeline currentStatus={status} agents={agents} />}<div className="stream-grid"><OutputStream outputs={outputs} connection={connection} /><Snapshot result={result} status={status} /></div><MetricCards report={result?.report_json} /><ChartsPanel report={result?.report_json} /><RiskInsights report={result?.report_json} /><ReportPreview result={result} /></div></div></main>;
 }

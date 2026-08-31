@@ -233,6 +233,33 @@ button:focus-visible, [role="button"]:focus-visible { outline: 2px solid var(--a
 .report-content code { padding: 2px 5px; border-radius: 5px; color: var(--accent-deep); background: #edf5f5; font-size: 11px; }
 .report-empty { display: flex; min-height: 220px; flex-direction: column; align-items: center; justify-content: center; gap: 10px; color: var(--muted); font-size: 11px; }
 
+.official-reports-panel { padding: 27px 30px 30px; border: 1px solid rgba(217, 227, 233, .95); border-radius: 20px; background: rgba(255,255,255,.88); box-shadow: var(--shadow-soft); }
+.official-reports-heading { align-items: flex-end; }
+.official-reports-note { padding-top: 7px; color: #a0adb5; font-family: "SF Mono", "Geist Mono", monospace; font-size: 10px; }
+.official-reports-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-top: 21px; }
+.official-report-card { position: relative; overflow: hidden; min-height: 236px; padding: 18px; border: 1px solid var(--line); border-radius: 15px; background: #fff; box-shadow: 0 8px 22px rgba(35,60,78,.035); transition: border-color .35s cubic-bezier(.32,.72,0,1), transform .35s cubic-bezier(.32,.72,0,1), box-shadow .35s cubic-bezier(.32,.72,0,1); }
+.official-report-card::after { position: absolute; right: -28px; top: -38px; width: 105px; height: 105px; border-radius: 50%; opacity: .12; content: ""; }
+.official-report-card:hover { border-color: #c5dfe2; box-shadow: 0 13px 28px rgba(35,60,78,.075); transform: translateY(-2px); }
+.official-report-card.accent-orange::after { background: #ff6a00; }
+.official-report-card.accent-blue::after { background: #398fed; }
+.official-report-card.accent-violet::after { background: #7067d8; }
+.official-report-card-top { display: flex; align-items: center; justify-content: space-between; }
+.official-report-logo { display: grid; width: 35px; height: 35px; place-items: center; border-radius: 11px; color: #fff; font-size: 17px; font-weight: 750; }
+.accent-orange .official-report-logo { background: linear-gradient(145deg, #ff9b50, #ef5b00); }
+.accent-blue .official-report-logo { background: linear-gradient(145deg, #74bbff, #337bdc); }
+.accent-violet .official-report-logo { background: linear-gradient(145deg, #a19bf5, #6558c9); }
+.official-report-format { padding: 5px 8px; border-radius: 999px; color: #74858c; font-size: 9px; background: #f1f5f6; }
+.official-report-company { margin-top: 17px; color: var(--ink-soft); font-size: 14px; font-weight: 750; }
+.official-report-ticker { margin-top: 3px; color: var(--muted); font-family: "SF Mono", "Geist Mono", monospace; font-size: 9px; letter-spacing: .04em; }
+.official-report-period { margin-top: 15px; color: var(--accent-deep); font-size: 12px; font-weight: 700; }
+.official-report-card p { min-height: 34px; margin: 6px 0 0; color: var(--muted-strong); font-size: 11px; line-height: 1.55; }
+.official-report-actions { display: flex; align-items: center; gap: 12px; margin-top: 16px; }
+.official-report-link { display: inline-flex; align-items: center; gap: 5px; color: var(--accent-deep); font-size: 11px; font-weight: 750; text-decoration: none; }
+.official-report-link:hover { color: #1f6f82; }
+.official-source-link { color: #95a2a9; font-size: 10px; text-decoration: none; }
+.official-source-link:hover { color: var(--accent-deep); }
+.official-report-source { display: flex; align-items: center; gap: 5px; margin-top: 14px; padding-top: 11px; border-top: 1px solid #edf1f3; color: #9aa8ae; font-size: 9px; }
+
 @media (max-width: 1100px) {
   .main-column { margin-left: 0; }
   .research-sidebar { transform: translateX(-101%); transition: transform .45s cubic-bezier(.32,.72,0,1); box-shadow: 20px 0 50px rgba(32, 58, 70, .1); }
@@ -245,6 +272,7 @@ button:focus-visible, [role="button"]:focus-visible { outline: 2px solid var(--a
 }
 @media (max-width: 860px) {
   .stream-grid, .charts-grid { grid-template-columns: 1fr; }
+  .official-reports-grid { grid-template-columns: 1fr; }
   .pipeline-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .pipeline-connector { display: none; }
 }
@@ -263,6 +291,7 @@ button:focus-visible, [role="button"]:focus-visible { outline: 2px solid var(--a
   .upload-panel-bottom { align-items: flex-start; flex-direction: column; }
   .gradient-button { width: 100%; }
   .pipeline-section, .charts-panel { padding: 22px 17px 20px; border-radius: 17px; }
+  .official-reports-panel { padding: 22px 17px 20px; border-radius: 17px; }
   .section-heading { display: block; }
   .section-heading > .status-chip, .chart-legend { margin-top: 14px; }
   .pipeline-grid, .metrics-grid { grid-template-columns: 1fr; gap: 9px; }
