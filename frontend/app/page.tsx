@@ -235,7 +235,13 @@ function formatSource(source: unknown): string {
 }
 
 function formatAgentOutput(value: unknown, depth = 0): string {
-  if (typeof value === "string") return value;
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+      try { return formatAgentOutput(JSON.parse(trimmed), depth); } catch { /* still-typing or plain text */ }
+    }
+    return value;
+  }
   if (value === null || value === undefined) return "未披露";
   const indent = "  ".repeat(depth);
   if (Array.isArray(value)) {
@@ -344,7 +350,13 @@ function AgentPipeline({ currentStatus, agents }: { currentStatus: Status; agent
 
 function OutputStream({ outputs, connection }: { outputs: Record<string, string[]>; connection: ConnectionState }) {
   const entries = AGENTS.flatMap((agent) => (outputs[agent.key] ?? []).map((text) => ({ ...agent, text })));
-  return <section className="stream-panel"><div className="stream-head"><div><div className="stream-title"><span className="terminal-mark">›_</span> Agent 输出流</div><div className="stream-subtitle">实时执行摘要 · 结果逐段输出</div></div><ConnectionBadge state={connection} /></div><div className="stream-body" aria-live="polite" aria-busy={connection === "live" || connection === "reconnecting"}>{entries.length === 0 ? <div className="stream-empty"><span className="stream-cursor" />等待 Agent 输出...</div> : <div className="stream-entries">{entries.map((entry, index) => <div key={`${entry.key}-${index}`} className="stream-entry"><div className="stream-entry-head"><span>{entry.shortTitle}</span><span className="stream-entry-index">#{String(index + 1).padStart(2, "0")}</span></div><div className="stream-entry-text">{entry.text}{index === entries.length - 1 && (connection === "live" || connection === "reconnecting") ? <span className="typing-cursor" aria-hidden="true" /> : null}</div></div>)}</div>}</div></section>;
+  const streamBodyRef = useRef<HTMLDivElement>(null);
+  const latestText = entries.length ? entries[entries.length - 1].text : "";
+  useEffect(() => {
+    const body = streamBodyRef.current;
+    if (body) body.scrollTop = body.scrollHeight;
+  }, [entries.length, latestText]);
+  return <section className="stream-panel"><div className="stream-head"><div><div className="stream-title"><span className="terminal-mark">›_</span> Agent 输出流</div><div className="stream-subtitle">实时执行摘要 · 结果逐段输出</div></div><ConnectionBadge state={connection} /></div><div ref={streamBodyRef} className="stream-body" aria-live="polite" aria-busy={connection === "live" || connection === "reconnecting"}>{entries.length === 0 ? <div className="stream-empty"><span className="stream-cursor" />等待 Agent 输出...</div> : <div className="stream-entries">{entries.map((entry, index) => <div key={`${entry.key}-${index}`} className="stream-entry"><div className="stream-entry-head"><span>{entry.shortTitle}</span><span className="stream-entry-index">#{String(index + 1).padStart(2, "0")}</span></div><div className="stream-entry-text">{entry.text}{index === entries.length - 1 && (connection === "live" || connection === "reconnecting") ? <span className="typing-cursor" aria-hidden="true" /> : null}</div></div>)}</div>}</div></section>;
 }
 
 function Snapshot({ result, status }: { result?: TaskResult; status: Status }) {
