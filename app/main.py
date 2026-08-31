@@ -372,6 +372,27 @@ class ReportAgents:
             normalized: Dict[str, Any] = {}
             for name, metric_value in metrics.items():
                 alias = metric_aliases.get(str(name).strip().lower(), name)
+                if isinstance(metric_value, dict):
+                    # The model often returns period-keyed strings instead of a
+                    # scalar. Expose the first evidenced scalar for charts while
+                    # retaining every original period value and source citation.
+                    has_scalar = any(
+                        isinstance(metric_value.get(key), (int, float))
+                        or (isinstance(metric_value.get(key), str) and re.match(r"^\s*[-+]?\d[\d,]*(?:\.\d+)?", metric_value[key]))
+                        for key in ("value", "current", "amount", "number")
+                    )
+                    if not has_scalar:
+                        for detail_name, detail_value in metric_value.items():
+                            if detail_name == "sources":
+                                continue
+                            if isinstance(detail_value, str):
+                                number_match = re.match(r"^\s*([-+]?\d[\d,]*(?:\.\d+)?)", detail_value)
+                                if number_match:
+                                    metric_value["value"] = float(number_match.group(1).replace(",", ""))
+                                    unit_match = re.search(r"单位[：:]\s*([^）)]+)", detail_value)
+                                    if unit_match and "unit" not in metric_value:
+                                        metric_value["unit"] = unit_match.group(1).strip()
+                                    break
                 normalized[str(alias)] = metric_value
             value["metrics"] = normalized
 
