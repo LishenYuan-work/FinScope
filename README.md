@@ -20,7 +20,7 @@ Copy-Item .env.example .env
 Copy-Item frontend/.env.example frontend/.env.local
 ```
 
-根目录 `.env` 至少填写模型 key 和 Supabase 配置：默认 `deepseek` 对话需要 `DEEPSEEK_API_KEY`，`qwen` 向量化需要 `DASHSCOPE_API_KEY`，以及 `SUPABASE_URL`、`SUPABASE_SERVICE_KEY`。前端 `.env.local` 设置 `NEXT_PUBLIC_DEMO_MODE=false`。
+根目录 `.env` 至少填写模型 key 和 Supabase 配置：默认 `deepseek` 对话需要 `DEEPSEEK_API_KEY`，`qwen` 向量化需要 `DASHSCOPE_API_KEY`，以及 `SUPABASE_URL`、`SUPABASE_SERVICE_KEY`。前端 `.env.local` 设置 `NEXT_PUBLIC_DEMO_MODE=false`。`VECTOR_DB_BATCH_SIZE` 控制向量写入批次，默认值 `8` 适合 Supabase 免费实例；批次超时会自动拆分重试。
 
 ### 使用 DeepSeek
 

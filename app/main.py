@@ -215,8 +215,30 @@ class SupabaseStore:
             {"task_id": task_id, "chunk_id": chunk["chunk_id"], "page": chunk["page"], "content": chunk["text"], "embedding": vector}
             for chunk, vector in zip(chunks, vectors)
         ]
-        if rows:
-            self.client.table("document_chunks").upsert(rows, on_conflict="task_id,chunk_id").execute()
+        if not rows:
+            return
+
+        # Supabase free instances enforce a relatively short statement timeout.
+        # Keep vector payloads small and split a timed-out batch recursively so a
+        # long annual report does not lose all of its pgvector evidence.
+        try:
+            configured_size = int(os.getenv("VECTOR_DB_BATCH_SIZE", "8"))
+        except ValueError:
+            configured_size = 8
+        batch_size = max(1, min(configured_size, 50))
+
+        def upsert_batch(batch: List[Dict[str, Any]]) -> None:
+            try:
+                self.client.table("document_chunks").upsert(batch, on_conflict="task_id,chunk_id").execute()
+            except Exception:
+                if len(batch) <= 1:
+                    raise
+                midpoint = len(batch) // 2
+                upsert_batch(batch[:midpoint])
+                upsert_batch(batch[midpoint:])
+
+        for start in range(0, len(rows), batch_size):
+            upsert_batch(rows[start : start + batch_size])
 
     def search_chunks(self, task_id: str, vector: List[float], limit: int = 8) -> List[Dict[str, Any]]:
         response = self.client.rpc(
