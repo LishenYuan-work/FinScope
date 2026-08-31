@@ -128,7 +128,7 @@ class PDFParseTool(BaseTool):
             text = "\n\n".join(pages).strip()
             if not text and not tables:
                 raise ValueError("PDF未提取到文本或表格")
-            return {"text": text, "tables": tables, "chunks": chunks}
+            return {"text": text, "tables": tables, "chunks": chunks, "page_count": len(pages)}
         except Exception as exc:  # wrapped so graph can persist an error state
             raise RuntimeError(f"PDF解析失败: {exc}") from exc
 
@@ -484,8 +484,7 @@ class ReportAgents:
             await self.emit(state["task_id"], "warning", {"message": f"向量入库失败，将继续页级分析: {exc}"})
             await self._progress(state["task_id"], "document_parser", "向量库暂不可用，将使用页级片段继续分析。")
         self.rag_tool.fallback_chunks[state["task_id"]] = parsed["chunks"]
-        await self._progress(state["task_id"], "document_parser", "文档解析完成，已准备好带页码溯源的证据。")
-        await self.emit(state["task_id"], "agent", {"agent": "document_parser", "output": parsed["text"][:2000]})
+        await self._progress(state["task_id"], "document_parser", f"文档解析完成：{parsed['page_count']} 页、{len(parsed['chunks'])} 个片段、{len(parsed['tables'])} 张表格已准备好。")
         return {**state, "status": "parsing", "document_text": parsed["text"], "tables": parsed["tables"], "chunks": parsed["chunks"]}
 
     async def finance(self, state: AgentState) -> AgentState:
@@ -541,6 +540,43 @@ class ReportAgents:
 
     @staticmethod
     def _to_markdown(data: Dict[str, Any]) -> str:
+        def display_name(name: Any) -> str:
+            return {
+                "value": "数值",
+                "current": "当前值",
+                "amount": "金额",
+                "number": "数值",
+                "unit": "单位",
+                "yoy": "同比",
+                "qoq": "环比",
+                "说明": "说明",
+            }.get(str(name), str(name))
+
+        def append_details(target: List[str], obj: Dict[str, Any], indent: int) -> None:
+            for detail_name, detail_value in obj.items():
+                if detail_name == "sources":
+                    continue
+                prefix = "  " * indent
+                label = display_name(detail_name)
+                if isinstance(detail_value, dict):
+                    target.append(f"{prefix}- {label}")
+                    append_details(target, detail_value, indent + 1)
+                elif isinstance(detail_value, list):
+                    rendered = json.dumps(detail_value, ensure_ascii=False)
+                    target.append(f"{prefix}- {label}：{rendered}")
+                else:
+                    rendered = "未披露" if detail_value is None else str(detail_value)
+                    target.append(f"{prefix}- {label}：{rendered}")
+            sources = obj.get("sources")
+            if isinstance(sources, list):
+                source_labels = ", ".join(
+                    "第%s页/%s" % (source.get("page"), source.get("chunk_id"))
+                    for source in sources
+                    if isinstance(source, dict)
+                )
+                if source_labels:
+                    target.append(f"{'  ' * indent}- 来源：{source_labels}")
+
         lines = ["# 投研分析报告", "", f"- 公司：{data.get('company', '未识别')}", f"- 期间：{data.get('period', '未识别')}", "", "## 核心指标", ""]
         metrics = data.get("metrics", {})
         for name, value in metrics.items() if isinstance(metrics, dict) else []:
@@ -548,32 +584,7 @@ class ReportAgents:
                 lines.append(f"- **{name}**：{value if value is not None else '未披露'}")
                 continue
             lines.append(f"- **{name}**")
-            for metric_name, metric_value in value.items():
-                if metric_name == "sources":
-                    continue
-                display_name = {
-                    "value": "数值",
-                    "current": "当前值",
-                    "amount": "金额",
-                    "number": "数值",
-                    "unit": "单位",
-                    "yoy": "同比",
-                    "qoq": "环比",
-                    "说明": "说明",
-                }.get(str(metric_name), str(metric_name))
-                if isinstance(metric_value, (dict, list)):
-                    rendered = json.dumps(metric_value, ensure_ascii=False)
-                else:
-                    rendered = "未披露" if metric_value is None else str(metric_value)
-                lines.append(f"  - {display_name}：{rendered}")
-            if isinstance(value.get("sources"), list):
-                source_labels = ", ".join(
-                    "第%s页/%s" % (source.get("page"), source.get("chunk_id"))
-                    for source in value["sources"]
-                    if isinstance(source, dict)
-                )
-                if source_labels:
-                    lines.append(f"  - 来源：{source_labels}")
+            append_details(lines, value, 1)
         lines.extend(["", "## 风险与异常", ""])
         for risk in data.get("risks", []) if isinstance(data.get("risks"), list) else []:
             if not isinstance(risk, dict):
