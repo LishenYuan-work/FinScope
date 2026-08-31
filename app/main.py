@@ -284,6 +284,9 @@ class ReportAgents:
             base_url=embedding_base_url,
             # tiktoken没有千问模型编码，关闭本地token计数，避免未知模型名导致初始化失败。
             tiktoken_enabled=embedding_provider == "openai",
+            # Qwen's compatible endpoint accepts our bounded 1800-character chunks;
+            # skip HuggingFace tokenization so deployments do not need transformers.
+            check_embedding_ctx_length=embedding_provider == "openai",
         )
         self.finance_parser = JsonReportParser(required_fields=["metrics", "notes", "sources"])
         self.risk_parser = JsonReportParser(required_fields=["risks", "anomalies", "sources"])
@@ -350,9 +353,10 @@ class ReportAgents:
         parsed = await self.pdf_tool.ainvoke(state["file_path"])
         try:
             vectors: List[List[float]] = []
-            # Batch embeddings so very long annual reports never become one oversized API request.
-            for start in range(0, len(parsed["chunks"]), 64):
-                batch = parsed["chunks"][start : start + 64]
+            # Qwen's compatible embedding endpoint accepts at most 25 inputs per request.
+            # Keep the batch below that limit so pgvector ingestion is real, not fallback-only.
+            for start in range(0, len(parsed["chunks"]), 24):
+                batch = parsed["chunks"][start : start + 24]
                 vectors.extend(await self.embeddings.aembed_documents([c["text"] for c in batch]))
             await asyncio.to_thread(self.store.save_chunks, state["task_id"], parsed["chunks"], vectors)
         except Exception as exc:
