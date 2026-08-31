@@ -254,7 +254,8 @@ button:focus-visible, [role="button"]:focus-visible { outline: 2px solid var(--a
 .official-report-period { margin-top: 15px; color: var(--accent-deep); font-size: 12px; font-weight: 700; }
 .official-report-card p { min-height: 34px; margin: 6px 0 0; color: var(--muted-strong); font-size: 11px; line-height: 1.55; }
 .official-report-actions { display: flex; align-items: center; gap: 12px; margin-top: 16px; }
-.official-report-link { display: inline-flex; align-items: center; gap: 5px; color: var(--accent-deep); font-size: 11px; font-weight: 750; text-decoration: none; }
+.official-report-link { display: inline-flex; align-items: center; gap: 5px; padding: 0; border: 0; color: var(--accent-deep); font: inherit; font-size: 11px; font-weight: 750; text-decoration: none; background: transparent; cursor: pointer; }
+.official-report-link:disabled { cursor: wait; opacity: .65; }
 .official-report-link:hover { color: #1f6f82; }
 .official-source-link { color: #95a2a9; font-size: 10px; text-decoration: none; }
 .official-source-link:hover { color: var(--accent-deep); }

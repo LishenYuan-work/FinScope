@@ -53,13 +53,13 @@ npm run dev
 
 ## 首页官方年报示例
 
-首页的“2025 年报示例”卡片仅提供官方来源链接，不会在后台自动下载或抓取文件。请在官方页面打开并手动下载后，再将 PDF 拖入上传区：
+仓库已内置三份官方来源年报到 `frontend/public/examples`。首页的“2025 年报示例”卡片可以直接载入本地文件，点击“开始分析”即可走完整上传、解析、RAG 和多 Agent 流程。卡片同时保留官方原件和来源页链接，便于核验：
 
 - [阿里巴巴集团 FY2025 Annual Report（PDF）](https://data.alibabagroup.com/ecms-files/1514443390/dbeaef58-eac8-4c00-9fdf-e361a5841078/Alibaba%20Group%20Holding%20Limited%20Fiscal%20Year%202025%20Annual%20Report.pdf) · [投资者关系来源页](https://www.alibabagroup.com/en-US/ir-financial-reports-financial-results)
 - [腾讯控股 2025 Annual Report（PDF）](https://static.www.tencent.com/uploads/2025/08/26/d1d2fb988f5e910e254b3abb41dadb0f.pdf) · [投资者关系来源页](https://www.tencent.com/investors/financial-reports/)
-- [百度集团 FY2025 20-F（SEC HTML）](https://www.sec.gov/Archives/edgar/data/1329099/000119312526109289/d38065d20f.htm) · [百度证券备案页](https://ir.baidu.com/financial-information/sec-filings)
+- [百度集团 FY2025 年报（香港交易所 PDF）](https://www1.hkexnews.hk/listedco/listconews/sehk/2026/0317/2026031701611_c.pdf) · [百度证券备案页](https://ir.baidu.com/financial-information/sec-filings)
 
-百度的 2025 财年报告目前以 SEC 20-F 年度备案形式提供，因此卡片标注为 HTML，而不是 PDF。示例卡片不会伪造指标或分析结果；真实图表和报告只在上传后端处理完成时生成。
+百度的 2025 财年报告以香港交易所官方披露 PDF 提供，文件名为 `baidu-2025-annual-report.pdf`。示例卡片不会伪造指标或分析结果；真实图表和报告只在上传后端处理完成时生成。
 
 ## Docker / Render
 

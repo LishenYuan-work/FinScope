@@ -120,6 +120,7 @@ type OfficialReport = {
   sourceLabel: string;
   sourceUrl: string;
   reportUrl: string;
+  localPath: string;
   accent: string;
 };
 
@@ -134,6 +135,7 @@ const OFFICIAL_REPORTS: OfficialReport[] = [
     sourceLabel: "Alibaba Group Investor Relations",
     sourceUrl: "https://www.alibabagroup.com/en-US/ir-financial-reports-financial-results",
     reportUrl: "https://data.alibabagroup.com/ecms-files/1514443390/dbeaef58-eac8-4c00-9fdf-e361a5841078/Alibaba%20Group%20Holding%20Limited%20Fiscal%20Year%202025%20Annual%20Report.pdf",
+    localPath: "/examples/alibaba-fy2025-annual-report.pdf",
     accent: "orange",
   },
   {
@@ -145,17 +147,19 @@ const OFFICIAL_REPORTS: OfficialReport[] = [
     sourceLabel: "Tencent Investor Relations",
     sourceUrl: "https://www.tencent.com/investors/financial-reports/",
     reportUrl: "https://static.www.tencent.com/uploads/2025/08/26/d1d2fb988f5e910e254b3abb41dadb0f.pdf",
+    localPath: "/examples/tencent-2025-annual-report.pdf",
     accent: "blue",
   },
   {
     company: "百度集团",
     ticker: "BIDU",
     period: "FY 2025",
-    format: "SEC 20-F（HTML）",
-    description: "百度 2025 财年的美国证券交易委员会年度报告备案。",
+    format: "官方 PDF",
+    description: "百度 2025 财年的年度报告披露文件。",
     sourceLabel: "SEC EDGAR official filing",
     sourceUrl: "https://ir.baidu.com/financial-information/sec-filings",
-    reportUrl: "https://www.sec.gov/Archives/edgar/data/1329099/000119312526109289/d38065d20f.htm",
+    reportUrl: "https://www1.hkexnews.hk/listedco/listconews/sehk/2026/0317/2026031701611_c.pdf",
+    localPath: "/examples/baidu-2025-annual-report.pdf",
     accent: "violet",
   },
 ];
@@ -237,7 +241,7 @@ function UploadPanel({ file, busy, onFile, onUpload, onClear }: { file: File | n
   </section>;
 }
 
-function OfficialReportsPanel() {
+function OfficialReportsPanel({ onLoadExample, loadingPath }: { onLoadExample: (report: OfficialReport) => void; loadingPath: string }) {
   return <section className="official-reports-panel no-print" aria-labelledby="official-reports-title">
     <div className="section-heading official-reports-heading">
       <div>
@@ -255,7 +259,8 @@ function OfficialReportsPanel() {
         <div className="official-report-period">{report.period}</div>
         <p>{report.description}</p>
         <div className="official-report-actions">
-          <a href={report.reportUrl} target="_blank" rel="noreferrer" className="official-report-link"><FileText size={15} />打开年报 <ArrowUpRight size={14} /></a>
+          <button type="button" disabled={loadingPath === report.localPath} onClick={() => onLoadExample(report)} className="official-report-link">{loadingPath === report.localPath ? <CircleNotch size={15} className="spin" /> : <FileText size={15} />} {loadingPath === report.localPath ? "载入中" : "直接载入示例"} <ArrowUpRight size={14} /></button>
+          <a href={report.reportUrl} target="_blank" rel="noreferrer" className="official-source-link">官方原件</a>
           <a href={report.sourceUrl} target="_blank" rel="noreferrer" className="official-source-link">来源页</a>
         </div>
         <div className="official-report-source"><LinkSimple size={12} /> {report.sourceLabel}</div>
@@ -308,6 +313,7 @@ export default function HomePage() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [exampleLoadingPath, setExampleLoadingPath] = useState("");
   const eventSource = useRef<EventSource | null>(null);
   const activeTaskRef = useRef<string | null>(null);
   const subscribeRef = useRef<(taskId: string, retry?: number) => void>(() => undefined);
@@ -360,9 +366,29 @@ export default function HomePage() {
     try { const loaded = await loadResult(task.id); if (loaded.status !== "summary_finish" && loaded.status !== "error") subscribe(task.id); } catch (cause) { setError(cause instanceof Error ? cause.message : "任务加载失败"); }
   };
   const newAnalysis = () => { closeStream(); setSelected(null); setResult(undefined); setFile(null); setStatus("pending"); resetPipeline(); };
+  const loadExample = async (report: OfficialReport) => {
+    setExampleLoadingPath(report.localPath);
+    setError("");
+    try {
+      const response = await fetch(report.localPath);
+      if (!response.ok) throw new Error("示例文件加载失败，请重新启动前端服务");
+      const blob = await response.blob();
+      setFile(new File([blob], `${report.company}_${report.period.replaceAll(" ", "_")}.pdf`, { type: "application/pdf" }));
+      closeStream();
+      setSelected(null);
+      setResult(undefined);
+      setStatus("pending");
+      resetPipeline();
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "示例文件加载失败");
+    } finally {
+      setExampleLoadingPath("");
+    }
+  };
   const refresh = async () => { if (!selected) return; if (selected.id === DEMO_TASK.id) { setResult(DEMO_RESULT); setStatus("summary_finish"); setAgents(DEMO_AGENTS); return; } try { await loadResult(selected.id); setError(""); } catch (cause) { setError(cause instanceof Error ? cause.message : "任务刷新失败"); } };
   const upload = async () => { if (!file) return; setBusy(true); setError(""); const body = new FormData(); body.append("file", file); try { const response = await fetch(`${API_BASE}/tasks`, { method: "POST", body }); if (!response.ok) throw new Error((await response.text()) || "上传失败"); const created = (await response.json()) as { task_id: string; status: Status }; const task: TaskSummary = { id: created.task_id, filename: file.name, status: created.status, created_at: new Date().toISOString() }; setTasks((current) => [task, ...current]); setSelected(task); setResult(undefined); resetPipeline(); setStatus("pending"); subscribe(created.task_id); } catch (cause) { setError(cause instanceof Error ? cause.message : "上传失败"); } finally { setBusy(false); } };
 
   const headline = selected ? selected.filename : "从年报开始，建立你的研究判断";
-  return <main className="app-shell"><ResearchSidebar tasks={tasks} selectedId={selected?.id} open={sidebarOpen} onSelect={chooseTask} onNew={newAnalysis} onClose={() => setSidebarOpen(false)} /><div className="main-column"><header className="topbar no-print"><div className="topbar-inner"><button aria-label="打开历史任务" className="mobile-menu-button" onClick={() => setSidebarOpen(true)}><SidebarSimple size={20} /></button><div className="topbar-context"><div className="topbar-kicker"><span className="kicker-line" /> AI 财报多 Agent 投研分析平台 {DEMO_MODE && <span className="demo-badge">DEMO DATA</span>}</div><h1>{headline}</h1></div><div className="topbar-actions">{selected && <><StatusChip status={status} /><button aria-label="刷新任务" className="icon-button" onClick={() => void refresh()}><ArrowClockwise size={18} /></button></>}</div></div></header><div className="page-content">{error && <div className="error-banner no-print"><WarningCircle size={18} weight="fill" /><span>{error}</span><button aria-label="关闭错误提示" onClick={() => setError("")}><X size={15} /></button></div>}{!selected && <><UploadPanel file={file} busy={busy} onFile={setFile} onUpload={upload} onClear={() => setFile(null)} /><OfficialReportsPanel /></>}{selected && <AgentPipeline currentStatus={status} agents={agents} />}<div className="stream-grid"><OutputStream outputs={outputs} connection={connection} /><Snapshot result={result} status={status} /></div><MetricCards report={result?.report_json} /><ChartsPanel report={result?.report_json} /><RiskInsights report={result?.report_json} /><ReportPreview result={result} /></div></div></main>;
+  return <main className="app-shell"><ResearchSidebar tasks={tasks} selectedId={selected?.id} open={sidebarOpen} onSelect={chooseTask} onNew={newAnalysis} onClose={() => setSidebarOpen(false)} /><div className="main-column"><header className="topbar no-print"><div className="topbar-inner"><button aria-label="打开历史任务" className="mobile-menu-button" onClick={() => setSidebarOpen(true)}><SidebarSimple size={20} /></button><div className="topbar-context"><div className="topbar-kicker"><span className="kicker-line" /> AI 财报多 Agent 投研分析平台 {DEMO_MODE && <span className="demo-badge">DEMO DATA</span>}</div><h1>{headline}</h1></div><div className="topbar-actions">{selected && <><StatusChip status={status} /><button aria-label="刷新任务" className="icon-button" onClick={() => void refresh()}><ArrowClockwise size={18} /></button></>}</div></div></header><div className="page-content">{error && <div className="error-banner no-print"><WarningCircle size={18} weight="fill" /><span>{error}</span><button aria-label="关闭错误提示" onClick={() => setError("")}><X size={15} /></button></div>}{!selected && <><UploadPanel file={file} busy={busy} onFile={setFile} onUpload={upload} onClear={() => setFile(null)} /><OfficialReportsPanel onLoadExample={loadExample} loadingPath={exampleLoadingPath} /></>}{selected && <AgentPipeline currentStatus={status} agents={agents} />}<div className="stream-grid"><OutputStream outputs={outputs} connection={connection} /><Snapshot result={result} status={status} /></div><MetricCards report={result?.report_json} /><ChartsPanel report={result?.report_json} /><RiskInsights report={result?.report_json} /><ReportPreview result={result} /></div></div></main>;
 }
