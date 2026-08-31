@@ -230,13 +230,60 @@ class SupabaseStore:
 class ReportAgents:
     def __init__(self, store: SupabaseStore, emit):
         self.store, self.emit = store, emit
-        if ChatOpenAI is None:
+        if ChatOpenAI is None or OpenAIEmbeddings is None:
             raise RuntimeError("LangChain依赖未安装")
-        api_key = os.getenv("OPENAI_API_KEY")
-        if not api_key:
-            raise RuntimeError("OPENAI_API_KEY 必须配置")
-        self.llm = ChatOpenAI(model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"), temperature=0, api_key=api_key)
-        self.embeddings = OpenAIEmbeddings(model=os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small"), api_key=api_key)
+        provider = os.getenv("LLM_PROVIDER", "openai").strip().lower()
+        llm_configs = {
+            "deepseek": (
+                os.getenv("DEEPSEEK_API_KEY", "").strip(),
+                os.getenv("DEEPSEEK_MODEL", "deepseek-chat"),
+                os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
+                "DEEPSEEK_API_KEY",
+            ),
+            "qwen": (
+                os.getenv("DASHSCOPE_API_KEY", "").strip(),
+                os.getenv("QWEN_MODEL", "qwen-plus"),
+                os.getenv("DASHSCOPE_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1"),
+                "DASHSCOPE_API_KEY",
+            ),
+            "openai": (
+                os.getenv("OPENAI_API_KEY", "").strip(),
+                os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
+                os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1"),
+                "OPENAI_API_KEY",
+            ),
+        }
+        if provider not in llm_configs:
+            raise RuntimeError("LLM_PROVIDER 只支持 deepseek、qwen 或 openai")
+        llm_key, llm_model, llm_base_url, llm_key_name = llm_configs[provider]
+        if not llm_key:
+            raise RuntimeError(f"LLM_PROVIDER={provider} 时必须配置 {llm_key_name}")
+        self.llm = ChatOpenAI(model=llm_model, temperature=0, api_key=llm_key, base_url=llm_base_url)
+
+        # DeepSeek目前没有公开embedding接口；Qwen兼容OpenAI的embedding协议，
+        # 因此默认用Qwen text-embedding-v2，输出1536维，与schema.sql一致。
+        embedding_provider = os.getenv("EMBEDDING_PROVIDER", "qwen" if provider in {"deepseek", "qwen"} else "openai").strip().lower()
+        if embedding_provider == "qwen":
+            embedding_key = os.getenv("DASHSCOPE_API_KEY", "").strip()
+            embedding_model = os.getenv("QWEN_EMBEDDING_MODEL", "text-embedding-v2")
+            embedding_base_url = os.getenv("DASHSCOPE_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1")
+            embedding_key_name = "DASHSCOPE_API_KEY"
+        elif embedding_provider == "openai":
+            embedding_key = os.getenv("OPENAI_API_KEY", "").strip()
+            embedding_model = os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small")
+            embedding_base_url = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
+            embedding_key_name = "OPENAI_API_KEY"
+        else:
+            raise RuntimeError("EMBEDDING_PROVIDER 只支持 qwen 或 openai")
+        if not embedding_key:
+            raise RuntimeError(f"EMBEDDING_PROVIDER={embedding_provider} 时必须配置 {embedding_key_name}")
+        self.embeddings = OpenAIEmbeddings(
+            model=embedding_model,
+            api_key=embedding_key,
+            base_url=embedding_base_url,
+            # tiktoken没有千问模型编码，关闭本地token计数，避免未知模型名导致初始化失败。
+            tiktoken_enabled=embedding_provider == "openai",
+        )
         self.finance_parser = JsonReportParser(required_fields=["metrics", "notes", "sources"])
         self.risk_parser = JsonReportParser(required_fields=["risks", "anomalies", "sources"])
         self.report_parser = JsonReportParser(required_fields=["company", "period", "metrics", "risks", "summary", "industry_comparison", "sources"])
@@ -349,16 +396,34 @@ events: Dict[str, "asyncio.Queue[str]"] = {}
 def configuration_issues() -> List[str]:
     """Return actionable configuration gaps without exposing secret values."""
     issues: List[str] = []
+    provider = os.getenv("LLM_PROVIDER", "openai").strip().lower()
     openai_key = os.getenv("OPENAI_API_KEY", "").strip()
+    deepseek_key = os.getenv("DEEPSEEK_API_KEY", "").strip()
+    dashscope_key = os.getenv("DASHSCOPE_API_KEY", "").strip()
     supabase_url = os.getenv("SUPABASE_URL", "").strip()
     supabase_key = os.getenv("SUPABASE_SERVICE_KEY", "").strip()
-    if not openai_key or openai_key in {"replace-me", "your-openai-key"}:
+    if provider == "deepseek":
+        if not deepseek_key or deepseek_key in {"replace-me", "your-deepseek-key"}:
+            issues.append("DEEPSEEK_API_KEY")
+    elif provider == "qwen":
+        if not dashscope_key or dashscope_key in {"replace-me", "your-dashscope-key"}:
+            issues.append("DASHSCOPE_API_KEY")
+    elif not openai_key or openai_key in {"replace-me", "your-openai-key"}:
         issues.append("OPENAI_API_KEY")
+    embedding_provider = os.getenv("EMBEDDING_PROVIDER", "qwen" if provider in {"deepseek", "qwen"} else "openai").strip().lower()
+    if provider not in {"deepseek", "qwen", "openai"}:
+        issues.append("LLM_PROVIDER")
+    if embedding_provider not in {"qwen", "openai"}:
+        issues.append("EMBEDDING_PROVIDER")
+    if embedding_provider == "qwen" and (not dashscope_key or dashscope_key in {"replace-me", "your-dashscope-key"}) and "DASHSCOPE_API_KEY" not in issues:
+        issues.append("DASHSCOPE_API_KEY (embeddings)")
+    elif embedding_provider == "openai" and (not openai_key or openai_key in {"replace-me", "your-openai-key"}) and "OPENAI_API_KEY" not in issues:
+        issues.append("OPENAI_API_KEY (embeddings)")
     if not supabase_url or "your-project.supabase.co" in supabase_url:
         issues.append("SUPABASE_URL")
     if not supabase_key or supabase_key in {"replace-me", "your-service-role-key"}:
         issues.append("SUPABASE_SERVICE_KEY")
-    return issues
+    return list(dict.fromkeys(issues))
 
 
 async def emit(task_id: str, event: str, payload: Dict[str, Any]) -> None:

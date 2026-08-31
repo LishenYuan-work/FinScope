@@ -12,7 +12,7 @@
 
 1. 在 Supabase SQL Editor 中执行根目录的 `schema.sql`，启用 `vector` 扩展并创建表和检索函数。
 2. 创建 Supabase 项目，复制 Project URL 和 service role key。
-3. 在 OpenAI 控制台创建 API key。密钥只写入本地 `.env`，不要提交 GitHub。
+3. 在 DeepSeek 或阿里云百炼（DashScope）控制台创建 API key。密钥只写入本地 `.env`，不要提交 GitHub。
 4. 复制环境模板并填写真实值：
 
 ```powershell
@@ -20,7 +20,13 @@ Copy-Item .env.example .env
 Copy-Item frontend/.env.example frontend/.env.local
 ```
 
-根目录 `.env` 至少填写：`OPENAI_API_KEY`、`SUPABASE_URL`、`SUPABASE_SERVICE_KEY`。前端 `.env.local` 设置 `NEXT_PUBLIC_DEMO_MODE=false`。
+根目录 `.env` 至少填写模型 key 和 Supabase 配置：默认 `deepseek` 对话需要 `DEEPSEEK_API_KEY`，`qwen` 向量化需要 `DASHSCOPE_API_KEY`，以及 `SUPABASE_URL`、`SUPABASE_SERVICE_KEY`。前端 `.env.local` 设置 `NEXT_PUBLIC_DEMO_MODE=false`。
+
+### 使用 DeepSeek
+
+项目支持 DeepSeek 和通义千问的 OpenAI 兼容接口。`LLM_PROVIDER=deepseek` 时把 DeepSeek key 填到 `DEEPSEEK_API_KEY`，并把 `EMBEDDING_PROVIDER=qwen`、千问 key 填到 `DASHSCOPE_API_KEY`。DeepSeek目前没有公开embedding接口，因此“DeepSeek对话 + 千问向量化”需要两把 key。
+
+如果希望只使用一把 key，可设置 `LLM_PROVIDER=qwen`、`EMBEDDING_PROVIDER=qwen`，同一个 `DASHSCOPE_API_KEY` 同时用于 qwen-plus 对话和 text-embedding-v2 向量化，不需要 OpenAI key。Supabase表中的 `vector(1536)` 与 text-embedding-v2 输出维度匹配。
 
 ## 本地运行
 
