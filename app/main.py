@@ -720,6 +720,28 @@ async def probe_event_replay() -> None:
     event_replay_checked_at = time.monotonic()
 
 
+async def initialize_background() -> None:
+    """Run non-critical Supabase provisioning after the HTTP server is live."""
+    assert store is not None
+    if os.getenv("SUPABASE_STORAGE_AUTO_CREATE", "true").strip().lower() in {"1", "true", "yes"}:
+        try:
+            await asyncio.wait_for(asyncio.to_thread(store.ensure_storage_bucket), timeout=8.0)
+        except asyncio.TimeoutError:
+            print("Supabase Storage bucket check timed out; continuing in degraded mode")
+    try:
+        recoverable = await asyncio.wait_for(asyncio.to_thread(store.list_recoverable_tasks), timeout=8.0)
+    except asyncio.TimeoutError:
+        recoverable = []
+        print("Recoverable task scan timed out; continuing without automatic recovery")
+    except Exception as exc:
+        recoverable = []
+        print(f"Recoverable task scan failed: {exc}")
+    for task in recoverable:
+        task_queue(str(task["id"]))
+        asyncio.create_task(resume_task(task))
+    await probe_event_replay()
+
+
 def format_sse(event: str, payload: Dict[str, Any], event_id: Optional[int] = None) -> str:
     lines: List[str] = []
     if event_id is not None:
@@ -869,23 +891,7 @@ async def startup() -> None:
     global store
     try:
         store = SupabaseStore()
-        if os.getenv("SUPABASE_STORAGE_AUTO_CREATE", "true").strip().lower() in {"1", "true", "yes"}:
-            try:
-                await asyncio.wait_for(asyncio.to_thread(store.ensure_storage_bucket), timeout=8.0)
-            except asyncio.TimeoutError:
-                print("Supabase Storage bucket check timed out; continuing in degraded mode")
-        try:
-            recoverable = await asyncio.wait_for(asyncio.to_thread(store.list_recoverable_tasks), timeout=8.0)
-        except asyncio.TimeoutError:
-            recoverable = []
-            print("Recoverable task scan timed out; continuing without automatic recovery")
-        except Exception as exc:
-            recoverable = []
-            print(f"Recoverable task scan failed: {exc}")
-        for task in recoverable:
-            task_queue(str(task["id"]))
-            asyncio.create_task(resume_task(task))
-        asyncio.create_task(probe_event_replay())
+        asyncio.create_task(initialize_background())
     except RuntimeError:
         # Keep healthz and the local demo frontend available until secrets are configured.
         store = None
