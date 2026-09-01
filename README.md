@@ -31,8 +31,12 @@ npm run dev
 ```
 打开 [http://localhost:3000](http://localhost:3000)。后端诊断检查为 [http://localhost:8000/healthz](http://localhost:8000/healthz)，会明确显示 `configuration: ready`、`event_replay` 和 `storage` 状态或缺失的变量名，但不会输出密钥；执行 `schema.sql` 并确保 `annual-reports` bucket 存在后，相关状态会在下一次检查（最多约 30 秒）自动变为 `available`，无需重启服务。部署编排使用严格的 [http://localhost:8000/readyz](http://localhost:8000/readyz)：只有 Supabase、事件回放表、Storage bucket 和模型变量全部就绪才返回 HTTP 200，Render Blueprint 已将健康检查切换到该地址。
 如果 `/healthz` 显示 `event_replay: unavailable_run_schema_sql`，说明当前 Supabase 项目还没有完整执行数据库脚本。登录对应项目的 Supabase Dashboard，进入 **SQL Editor**，粘贴并运行仓库根目录 `schema.sql` 的全部内容；然后确认 Storage 中存在名为 `annual-reports` 的私有 bucket。重新访问 `/healthz`，看到 `event_replay: available`、`storage: available` 后，再访问 `/readyz`，应返回 HTTP 200。脚本使用 `if not exists` 和 `create or replace`，重复执行是安全的。
-## 接口
-`POST /tasks` 上传字段 `file`；`GET /stream/{task_id}` 订阅 SSE（支持 `Last-Event-ID` 断线补发）；`GET /tasks/{task_id}` 获取 Markdown 与 JSON 报告；`GET /tasks?limit=50` 获取历史任务。
+## 认证与接口
+首页要求邮箱+密码登录，认证由 Supabase Auth 托管。注册后如果 Supabase 开启了邮箱确认，需要先点击确认邮件，再返回登录页。
+
+`POST /auth/signup` 注册；`POST /auth/login` 登录并返回 access token；`GET /auth/me` 校验当前登录用户。除 `/healthz`、`/readyz` 和认证接口外，任务接口都要求 `Authorization: Bearer <access_token>`。`POST /tasks` 上传字段 `file`；`GET /stream/{task_id}` 订阅 SSE（原生 EventSource 使用短期 `access_token` 查询参数，支持 `Last-Event-ID` 断线补发）；`GET /tasks/{task_id}` 获取当前用户的 Markdown 与 JSON 报告；`GET /tasks?limit=50` 只返回当前用户的历史任务。
+
+任务表通过 `user_id` 关联 Supabase Auth 用户，用户之间不会互相看到任务、报告或事件。执行 schema 迁移后，旧的未归属任务不会展示给新登录用户。
 ## 首页官方年报示例
 仓库已内置三份官方来源年报到 `frontend/public/examples`。首页的“2025 年报示例”卡片会读取本地 PDF，调用 `POST /tasks` 创建真实任务，再通过 SSE 展示 Agent 流水线、输出流、RAG 检索、核心指标、图表、风险、行业对比和中文 Markdown 报告。示例不会使用前端预设结果，也不会绕过 FastAPI 或写入虚假的任务记录。卡片同时保留官方原件和来源页链接，便于核验：
 - [阿里巴巴集团 FY2025 Annual Report（PDF）](https://data.alibabagroup.com/ecms-files/1514443390/dbeaef58-eac8-4c00-9fdf-e361a5841078/Alibaba%20Group%20Holding%20Limited%20Fiscal%20Year%202025%20Annual%20Report.pdf) · [投资者关系来源页](https://www.alibabagroup.com/en-US/ir-financial-reports-financial-results)

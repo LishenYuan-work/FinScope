@@ -19,6 +19,7 @@ import {
   Pulse,
   SealCheck,
   SidebarSimple,
+  SignOut,
   Sparkle,
   WarningCircle,
   X,
@@ -36,6 +37,7 @@ import {
 } from "recharts";
 import ReactMarkdown from "react-markdown";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { authFetch, clearAccessToken, getAccessToken } from "../lib/auth";
 
 declare global {
   interface Window {
@@ -265,7 +267,7 @@ function ConnectionBadge({ state }: { state: ConnectionState }) {
   return <span className={`connection-badge ${config[state].className}`}><span className="connection-dot" />{config[state].label}</span>;
 }
 
-function ResearchSidebar({ tasks, selectedId, archiveOpen, open, onSelect, onNew, onOpenArchive, onOpenCurrent, onClose }: { tasks: TaskSummary[]; selectedId?: string; archiveOpen: boolean; open: boolean; onSelect: (task: TaskSummary) => void; onNew: () => void; onOpenArchive: () => void; onOpenCurrent: () => void; onClose: () => void }) {
+function ResearchSidebar({ tasks, selectedId, archiveOpen, open, onSelect, onNew, onOpenArchive, onOpenCurrent, onClose, onLogout }: { tasks: TaskSummary[]; selectedId?: string; archiveOpen: boolean; open: boolean; onSelect: (task: TaskSummary) => void; onNew: () => void; onOpenArchive: () => void; onOpenCurrent: () => void; onClose: () => void; onLogout: () => void }) {
   return <>
     {open && <button aria-label="关闭历史任务栏" className="sidebar-overlay no-print" onClick={onClose} />}
     <aside className={`research-sidebar no-print ${open ? "is-open" : ""}`}>
@@ -275,7 +277,7 @@ function ResearchSidebar({ tasks, selectedId, archiveOpen, open, onSelect, onNew
       <div className="sidebar-nav"><button className={`sidebar-nav-item ${!archiveOpen ? "is-active" : ""}`} onClick={onOpenCurrent}><ListChecks size={17} />当前分析<span className="nav-count">{selectedId ? "1" : "0"}</span></button><button className={`sidebar-nav-item ${archiveOpen ? "is-active" : ""}`} onClick={onOpenArchive}><BookOpenText size={17} />研究档案<span className="nav-count">{tasks.length}</span></button></div>
       <div className="sidebar-section-label history-label">历史任务</div>
       <div className="task-list">{tasks.length === 0 ? <div className="sidebar-empty"><FileText size={18} /><span>上传第一份年报，历史分析会显示在这里。</span></div> : tasks.map((task) => <button key={task.id} onClick={() => { onSelect(task); onClose(); }} className={`task-item ${task.id === selectedId ? "is-selected" : ""}`}><div className="task-item-top"><FileText size={16} /><span>{task.filename}</span><CaretRight size={14} className="task-arrow" /></div><div className="task-item-meta"><span>{formatDate(task.created_at)}</span><StatusChip status={task.status} /></div></button>)}</div>
-      <div className="sidebar-footer"><div className="secure-line"><SealCheck size={15} weight="fill" />数据仅在已配置后端处理</div><div className="sidebar-version">FinScope Console · 01</div></div>
+      <div className="sidebar-footer"><div className="secure-line"><SealCheck size={15} weight="fill" />数据仅在已配置后端处理</div><button className="logout-button" onClick={onLogout}><SignOut size={15} />退出登录</button><div className="sidebar-version">FinScope Console · 01</div></div>
     </aside>
   </>;
 }
@@ -391,6 +393,7 @@ function ReportPreview({ result }: { result?: TaskResult }) {
 }
 
 export default function HomePage() {
+  const [authReady, setAuthReady] = useState(false);
   const [tasks, setTasks] = useState<TaskSummary[]>([]);
   const [selected, setSelected] = useState<TaskSummary | null>(null);
   const [file, setFile] = useState<File | null>(null);
@@ -459,7 +462,7 @@ export default function HomePage() {
 
   const loadTasks = useCallback(async () => {
     try {
-      const response = await fetch(`${apiBaseUrl()}/tasks`);
+      const response = await authFetch(`${apiBaseUrl()}/tasks`);
       if (!response.ok) throw new Error("历史任务加载失败");
       const remoteTasks = (await response.json()) as TaskSummary[];
       setTasks(remoteTasks);
@@ -473,13 +476,17 @@ export default function HomePage() {
   }, []);
 
   const loadResult = useCallback(async (taskId: string) => {
-    const response = await fetch(`${apiBaseUrl()}/tasks/${taskId}`); if (!response.ok) throw new Error("任务结果加载失败"); const data = (await response.json()) as TaskResult; setResult(data); applyStatus(data.status); syncTaskSummary(taskId, data.status, data.error); if (data.error) setError(data.error); return data;
+    const response = await authFetch(`${apiBaseUrl()}/tasks/${taskId}`); if (!response.ok) throw new Error("任务结果加载失败"); const data = (await response.json()) as TaskResult; setResult(data); applyStatus(data.status); syncTaskSummary(taskId, data.status, data.error); if (data.error) setError(data.error); return data;
   }, [applyStatus, syncTaskSummary]);
 
   const subscribe = useCallback((taskId: string, retry = 0) => {
     if (activeTaskRef.current !== taskId) lastEventIdRef.current = "";
     closeStream(); activeTaskRef.current = taskId; setConnection(retry > 0 ? "reconnecting" : "live");
-    const replayQuery = retry > 0 && lastEventIdRef.current ? `?after_id=${encodeURIComponent(lastEventIdRef.current)}` : "";
+    const token = getAccessToken();
+    const replayParts = new URLSearchParams();
+    if (retry > 0 && lastEventIdRef.current) replayParts.set("after_id", lastEventIdRef.current);
+    if (token) replayParts.set("access_token", token);
+    const replayQuery = replayParts.toString() ? `?${replayParts.toString()}` : "";
     const stream = new EventSource(`${apiBaseUrl()}/stream/${taskId}${replayQuery}`); eventSource.current = stream;
     const parse = (event: MessageEvent) => { try { return JSON.parse(event.data) as Record<string, unknown>; } catch { return {}; } };
     const rememberEvent = (event: Event) => { const id = (event as MessageEvent).lastEventId; if (id) lastEventIdRef.current = id; };
@@ -490,7 +497,6 @@ export default function HomePage() {
    }, [applyStatus, closeStream, enqueueOutput, loadResult, syncTaskSummary]);
 
   useEffect(() => { subscribeRef.current = subscribe; }, [subscribe]);
-  useEffect(() => { void loadTasks(); return closeStream; }, [closeStream, loadTasks]);
 
   const chooseTask = async (task: TaskSummary) => {
     closeStream(); setArchiveOpen(false); setSelected(task); setFile(null); resetPipeline();
@@ -510,7 +516,7 @@ export default function HomePage() {
       const blob = await response.blob();
       const body = new FormData();
       body.append("file", new File([blob], filename, { type: "application/pdf" }));
-      const taskResponse = await fetch(`${apiBaseUrl()}/tasks`, { method: "POST", body });
+      const taskResponse = await authFetch(`${apiBaseUrl()}/tasks`, { method: "POST", body });
       if (!taskResponse.ok) throw new Error((await taskResponse.text()) || "示例任务创建失败");
       const created = (await taskResponse.json()) as { task_id: string; status: Status };
       const task: TaskSummary = { id: created.task_id, filename, status: created.status, created_at: new Date().toISOString(), exampleId: report.id };
@@ -531,8 +537,18 @@ export default function HomePage() {
     }
   };
   const refresh = async () => { if (!selected) return; try { const loaded = await loadResult(selected.id); setError(""); if (loaded.status !== "summary_finish" && loaded.status !== "error") subscribe(selected.id); } catch (cause) { setError(cause instanceof Error ? cause.message : "任务刷新失败"); } };
-  const upload = async () => { if (!file) return; setBusy(true); setError(""); const body = new FormData(); body.append("file", file); try { const response = await fetch(`${apiBaseUrl()}/tasks`, { method: "POST", body }); if (!response.ok) throw new Error((await response.text()) || "上传失败"); const created = (await response.json()) as { task_id: string; status: Status }; const task: TaskSummary = { id: created.task_id, filename: file.name, status: created.status, created_at: new Date().toISOString() }; setTasks((current) => [task, ...current]); setSelected(task); setResult(undefined); resetPipeline(); setStatus("pending"); subscribe(created.task_id); } catch (cause) { setError(cause instanceof Error ? cause.message : "上传失败"); } finally { setBusy(false); } };
+  const upload = async () => { if (!file) return; setBusy(true); setError(""); const body = new FormData(); body.append("file", file); try { const response = await authFetch(`${apiBaseUrl()}/tasks`, { method: "POST", body }); if (!response.ok) throw new Error((await response.text()) || "上传失败"); const created = (await response.json()) as { task_id: string; status: Status }; const task: TaskSummary = { id: created.task_id, filename: file.name, status: created.status, created_at: new Date().toISOString() }; setTasks((current) => [task, ...current]); setSelected(task); setResult(undefined); resetPipeline(); setStatus("pending"); subscribe(created.task_id); } catch (cause) { setError(cause instanceof Error ? cause.message : "上传失败"); } finally { setBusy(false); } };
 
+  useEffect(() => {
+    if (!getAccessToken()) {
+      window.location.assign("/login");
+      return;
+    }
+    setAuthReady(true);
+  }, []);
   const headline = selected ? selected.filename : "从年报开始，建立你的研究判断";
-  return <main className="app-shell"><ResearchSidebar tasks={tasks} selectedId={selected?.id} archiveOpen={archiveOpen} open={sidebarOpen} onSelect={chooseTask} onNew={newAnalysis} onOpenArchive={openArchive} onOpenCurrent={openCurrent} onClose={() => setSidebarOpen(false)} /><div className="main-column"><header className="topbar no-print"><div className="topbar-inner"><button aria-label="打开历史任务" className="mobile-menu-button" onClick={() => setSidebarOpen(true)}><SidebarSimple size={20} /></button><div className="topbar-context"><div className="topbar-kicker"><span className="kicker-line" /> AI 财报多 Agent 投研分析平台</div><h1>{archiveOpen ? "统一管理你的研究判断" : headline}</h1></div><div className="topbar-actions">{selected && !archiveOpen && <><StatusChip status={status} /><button aria-label="刷新任务" className="icon-button" onClick={() => void refresh()}><ArrowClockwise size={18} /></button></>}</div></div></header><div className="page-content">{error && <div className="error-banner no-print"><WarningCircle size={18} weight="fill" /><span>{error}</span><button aria-label="关闭错误提示" onClick={() => setError("")}><X size={15} /></button></div>}{archiveOpen ? <ResearchArchive tasks={tasks} onSelect={chooseTask} onRefresh={() => void loadTasks()} /> : <>{!selected && <UploadPanel file={file} busy={busy} onFile={setFile} onUpload={upload} onClear={() => setFile(null)} />}{selected && <AgentPipeline currentStatus={status} agents={agents} />}{!selected && <OfficialReportsPanel onLoadExample={loadExample} loadingPath={exampleLoadingPath} />}<div className="stream-grid"><OutputStream outputs={outputs} connection={connection} /><Snapshot result={result} status={status} /></div><MetricCards report={result?.report_json} /><ChartsPanel report={result?.report_json} /><IndustryComparison report={result?.report_json} /><RiskInsights report={result?.report_json} /><ReportPreview result={result} /></>}</div></div></main>;
+  useEffect(() => { if (authReady) void loadTasks(); return closeStream; }, [authReady, closeStream, loadTasks]);
+  if (!authReady) return <main className="auth-loading"><div className="auth-loading-dot" />正在验证登录状态…</main>;
+  const logout = () => { closeStream(); clearAccessToken(); window.location.assign("/login"); };
+  return <main className="app-shell"><ResearchSidebar tasks={tasks} selectedId={selected?.id} archiveOpen={archiveOpen} open={sidebarOpen} onSelect={chooseTask} onNew={newAnalysis} onOpenArchive={openArchive} onOpenCurrent={openCurrent} onClose={() => setSidebarOpen(false)} onLogout={logout} /><div className="main-column"><header className="topbar no-print"><div className="topbar-inner"><button aria-label="打开历史任务" className="mobile-menu-button" onClick={() => setSidebarOpen(true)}><SidebarSimple size={20} /></button><div className="topbar-context"><div className="topbar-kicker"><span className="kicker-line" /> AI 财报多 Agent 投研分析平台</div><h1>{archiveOpen ? "统一管理你的研究判断" : headline}</h1></div><div className="topbar-actions">{selected && !archiveOpen && <><StatusChip status={status} /><button aria-label="刷新任务" className="icon-button" onClick={() => void refresh()}><ArrowClockwise size={18} /></button></>}</div></div></header><div className="page-content">{error && <div className="error-banner no-print"><WarningCircle size={18} weight="fill" /><span>{error}</span><button aria-label="关闭错误提示" onClick={() => setError("")}><X size={15} /></button></div>}{archiveOpen ? <ResearchArchive tasks={tasks} onSelect={chooseTask} onRefresh={() => void loadTasks()} /> : <>{!selected && <UploadPanel file={file} busy={busy} onFile={setFile} onUpload={upload} onClear={() => setFile(null)} />}{selected && <AgentPipeline currentStatus={status} agents={agents} />}{!selected && <OfficialReportsPanel onLoadExample={loadExample} loadingPath={exampleLoadingPath} />}<div className="stream-grid"><OutputStream outputs={outputs} connection={connection} /><Snapshot result={result} status={status} /></div><MetricCards report={result?.report_json} /><ChartsPanel report={result?.report_json} /><IndustryComparison report={result?.report_json} /><RiskInsights report={result?.report_json} /><ReportPreview result={result} /></>}</div></div></main>;
 }

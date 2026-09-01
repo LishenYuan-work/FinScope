@@ -11,15 +11,19 @@ import os
 import re
 import tempfile
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, AsyncIterator, Callable, Dict, List, Literal, Optional, TypedDict
 from uuid import uuid4
 
 from dotenv import load_dotenv
-from fastapi import BackgroundTasks, FastAPI, File, Header, HTTPException, UploadFile
+from fastapi import BackgroundTasks, Depends, FastAPI, File, Header, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
 from supabase import Client, create_client
 
@@ -196,6 +200,71 @@ class TaskListItem(BaseModel):
     updated_at: Optional[datetime] = None
 
 
+class AuthCredentials(BaseModel):
+    email: str = Field(min_length=3, max_length=320)
+    password: str = Field(min_length=8, max_length=128)
+
+
+class AuthResponse(BaseModel):
+    access_token: str
+    refresh_token: Optional[str] = None
+    expires_in: Optional[int] = None
+    user: Dict[str, Any]
+
+
+class AuthUser(BaseModel):
+    id: str
+    email: Optional[str] = None
+
+
+class SupabaseAuth:
+    """Small server-side Supabase Auth client using the REST API.
+
+    Keeping auth calls separate from the shared service-role PostgREST client
+    avoids mutating a global auth session when multiple Render requests arrive
+    concurrently.
+    """
+
+    def __init__(self, url: str, key: str) -> None:
+        self.base_url = url.rstrip("/")
+        self.key = key
+
+    def _request(self, path: str, method: str, payload: Optional[Dict[str, Any]] = None, token: Optional[str] = None) -> Dict[str, Any]:
+        data = json.dumps(payload).encode("utf-8") if payload is not None else None
+        headers = {"apikey": self.key, "Content-Type": "application/json"}
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        request = urllib.request.Request(f"{self.base_url}{path}", data=data, headers=headers, method=method)
+        try:
+            with urllib.request.urlopen(request, timeout=15) as response:
+                raw = response.read().decode("utf-8")
+                return json.loads(raw) if raw else {}
+        except urllib.error.HTTPError as exc:
+            try:
+                error_body = json.loads(exc.read().decode("utf-8"))
+            except Exception:
+                error_body = {}
+            message = str(error_body.get("msg") or error_body.get("message") or error_body.get("error_description") or "认证请求失败")
+            raise ValueError(message) from exc
+        except (urllib.error.URLError, TimeoutError) as exc:
+            reason = getattr(exc, "reason", None)
+            print(f"Supabase Auth network error: {type(exc).__name__} {reason!r}")
+            raise RuntimeError("Supabase Auth 暂时不可用") from exc
+
+    def sign_up(self, credentials: AuthCredentials) -> Dict[str, Any]:
+        return self._request("/auth/v1/signup", "POST", credentials.model_dump())
+
+    def sign_in(self, credentials: AuthCredentials) -> Dict[str, Any]:
+        return self._request("/auth/v1/token?grant_type=password", "POST", credentials.model_dump())
+
+    def get_user(self, token: str) -> AuthUser:
+        value = self._request("/auth/v1/user", "GET", token=token)
+        user_id = value.get("id")
+        if not user_id:
+            raise ValueError("无效的登录凭证")
+        return AuthUser(id=str(user_id), email=value.get("email"))
+
+
 class SupabaseStore:
     def __init__(self) -> None:
         url = os.getenv("SUPABASE_URL")
@@ -294,10 +363,10 @@ class SupabaseStore:
     def update_storage_path(self, task_id: str, storage_path: str) -> None:
         self.client.table("analysis_tasks").update({"storage_path": storage_path}).eq("id", task_id).execute()
 
-    def create_task(self, filename: str, storage_path: str, task_id: Optional[str] = None) -> str:
+    def create_task(self, filename: str, storage_path: str, user_id: str, task_id: Optional[str] = None) -> str:
         task_id = task_id or str(uuid4())
         self.client.table("analysis_tasks").insert(
-            {"id": task_id, "filename": filename, "storage_path": storage_path, "status": "pending"}
+            {"id": task_id, "filename": filename, "storage_path": storage_path, "status": "pending", "user_id": user_id}
         ).execute()
         return task_id
 
@@ -351,11 +420,15 @@ class SupabaseStore:
         )
         return response.data or []
 
-    def get_task(self, task_id: str) -> Dict[str, Any]:
+    def get_task(self, task_id: str, user_id: Optional[str] = None) -> Dict[str, Any]:
         try:
-            task = self._read_with_retries(
-                lambda: self.client.table("analysis_tasks").select("*").eq("id", task_id).single().execute()
-            ).data
+            def read_task() -> Any:
+                query = self.client.table("analysis_tasks").select("*").eq("id", task_id)
+                if user_id:
+                    query = query.eq("user_id", user_id)
+                return query.single().execute()
+
+            task = self._read_with_retries(read_task).data
             report_response = self._read_with_retries(
                 lambda: self.client.table("analysis_reports")
                 .select("markdown,report_json")
@@ -373,14 +446,14 @@ class SupabaseStore:
             raise KeyError(task_id)
         return {**task, "report_markdown": (report or {}).get("markdown"), "report_json": (report or {}).get("report_json")}
 
-    def list_tasks(self, limit: int = 50) -> List[Dict[str, Any]]:
-        response = self._read_with_retries(
-            lambda: self.client.table("analysis_tasks")
-            .select("id,filename,status,error_message,created_at,updated_at")
-            .order("created_at", desc=True)
-            .limit(limit)
-            .execute()
-        )
+    def list_tasks(self, limit: int = 50, user_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        def read_tasks() -> Any:
+            query = self.client.table("analysis_tasks").select("id,filename,status,error_message,created_at,updated_at")
+            if user_id:
+                query = query.eq("user_id", user_id)
+            return query.order("created_at", desc=True).limit(limit).execute()
+
+        response = self._read_with_retries(read_tasks)
         return response.data or []
 
     def append_event(self, task_id: str, event: str, payload: Dict[str, Any]) -> Optional[int]:
@@ -826,6 +899,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 store: SupabaseStore | None = None
+auth_service: SupabaseAuth | None = None
+bearer_scheme = HTTPBearer(auto_error=False)
 # Queues only cover currently connected clients. Durable replay comes from
 # analysis_task_events, so a process restart does not erase the audit trail.
 events: Dict[str, "asyncio.Queue[Dict[str, Any]]"] = {}
@@ -834,6 +909,23 @@ event_replay_state: Optional[str] = "checking"
 storage_state: Optional[str] = "checking"
 event_replay_checked_at = 0.0
 analysis_semaphore: Optional[asyncio.Semaphore] = None
+
+
+async def current_user(
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme),
+    access_token: Optional[str] = Query(default=None, description="仅用于原生 EventSource 的 SSE 兼容模式"),
+) -> AuthUser:
+    """Validate a Supabase access token for protected API routes."""
+    token = credentials.credentials if credentials else access_token
+    if not token or auth_service is None:
+        raise HTTPException(status_code=401, detail="请先登录")
+    try:
+        return await asyncio.to_thread(auth_service.get_user, token)
+    except ValueError as exc:
+        raise HTTPException(status_code=401, detail="登录已过期，请重新登录") from exc
+    except Exception as exc:
+        print(f"Supabase Auth verification failed: {exc}")
+        raise HTTPException(status_code=503, detail="认证服务暂时不可用") from exc
 
 
 def task_queue(task_id: str) -> "asyncio.Queue[Dict[str, Any]]":
@@ -1106,18 +1198,67 @@ async def resume_task(task: Dict[str, Any]) -> None:
 
 @app.on_event("startup")
 async def startup() -> None:
-    global store, analysis_semaphore
+    global store, auth_service, analysis_semaphore
     try:
         store = SupabaseStore()
+        auth_service = SupabaseAuth(os.environ["SUPABASE_URL"], os.environ["SUPABASE_SERVICE_KEY"])
         analysis_semaphore = asyncio.Semaphore(_env_int("MAX_CONCURRENT_ANALYSES", 1, 1, 4))
         asyncio.create_task(initialize_background())
     except RuntimeError:
         # Keep healthz and the local demo frontend available until secrets are configured.
         store = None
+        auth_service = None
+
+
+@app.post("/auth/signup")
+async def signup(credentials: AuthCredentials) -> Dict[str, Any]:
+    if auth_service is None:
+        raise HTTPException(503, "后端未配置 Supabase Auth")
+    try:
+        payload = await asyncio.to_thread(auth_service.sign_up, credentials)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except Exception as exc:
+        print(f"Supabase signup failed: {exc}")
+        raise HTTPException(503, "注册服务暂时不可用") from exc
+    session = payload.get("session") if isinstance(payload.get("session"), dict) else payload
+    access_token = session.get("access_token") if isinstance(session, dict) else None
+    user = payload.get("user") if isinstance(payload.get("user"), dict) else {}
+    if access_token:
+        return {"access_token": access_token, "refresh_token": session.get("refresh_token"), "expires_in": session.get("expires_in"), "user": user}
+    return {"access_token": None, "user": user, "message": "注册成功，请检查邮箱完成验证后再登录"}
+
+
+@app.post("/auth/login", response_model=AuthResponse)
+async def login(credentials: AuthCredentials) -> AuthResponse:
+    if auth_service is None:
+        raise HTTPException(503, "后端未配置 Supabase Auth")
+    try:
+        payload = await asyncio.to_thread(auth_service.sign_in, credentials)
+    except ValueError:
+        raise HTTPException(401, "邮箱或密码错误")
+    except Exception as exc:
+        print(f"Supabase login failed: {exc}")
+        raise HTTPException(503, "登录服务暂时不可用") from exc
+    session = payload.get("session") if isinstance(payload.get("session"), dict) else payload
+    access_token = session.get("access_token") if isinstance(session, dict) else None
+    if not access_token:
+        raise HTTPException(401, "邮箱或密码错误")
+    user = payload.get("user") if isinstance(payload.get("user"), dict) else session.get("user", {})
+    return AuthResponse(access_token=access_token, refresh_token=session.get("refresh_token"), expires_in=session.get("expires_in"), user=user)
+
+
+@app.get("/auth/me", response_model=AuthUser)
+async def auth_me(user: AuthUser = Depends(current_user)) -> AuthUser:
+    return user
 
 
 @app.post("/tasks", response_model=TaskCreateResponse)
-async def upload_pdf(background: BackgroundTasks, file: UploadFile = File(...)) -> TaskCreateResponse:
+async def upload_pdf(
+    background: BackgroundTasks,
+    file: UploadFile = File(...),
+    user: AuthUser = Depends(current_user),
+) -> TaskCreateResponse:
     if not file.filename or not file.filename.lower().endswith(".pdf"):
         raise HTTPException(400, "仅支持PDF文件")
     if store is None:
@@ -1128,7 +1269,7 @@ async def upload_pdf(background: BackgroundTasks, file: UploadFile = File(...)) 
     placeholder = f"pending://{task_id}/{SupabaseStore._safe_filename(file.filename)}"
     storage_path: Optional[str] = None
     try:
-        await asyncio.to_thread(store.create_task, file.filename, placeholder, task_id)
+        await asyncio.to_thread(store.create_task, file.filename, placeholder, user.id, task_id)
         storage_path = await asyncio.to_thread(store.upload_document, task_id, file.filename, data)
         await asyncio.to_thread(store.update_storage_path, task_id, storage_path)
         temp = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
@@ -1155,11 +1296,16 @@ async def stream(
     task_id: str,
     last_event_id: Optional[str] = Header(default=None, alias="Last-Event-ID"),
     after_id: Optional[int] = None,
+    user: Optional[AuthUser] = Depends(current_user),
 ) -> StreamingResponse:
     if store is None:
         raise HTTPException(503, "服务尚未就绪")
+    owner_id = user.id if isinstance(user, AuthUser) else None
     try:
-        current = await asyncio.to_thread(store.get_task, task_id)
+        if owner_id is None:
+            current = await asyncio.to_thread(store.get_task, task_id)
+        else:
+            current = await asyncio.to_thread(store.get_task, task_id, owner_id)
     except KeyError:
         raise HTTPException(404, "任务不存在")
     except Exception as exc:
@@ -1239,11 +1385,12 @@ async def stream(
 
 
 @app.get("/tasks/{task_id}", response_model=TaskResult)
-async def task_result(task_id: str) -> TaskResult:
+async def task_result(task_id: str, user: Optional[AuthUser] = Depends(current_user)) -> TaskResult:
     if store is None:
         raise HTTPException(503, "后端未配置 Supabase")
     try:
-        row = await asyncio.to_thread(store.get_task, task_id)
+        owner_id = user.id if isinstance(user, AuthUser) else None
+        row = await asyncio.to_thread(store.get_task, task_id) if owner_id is None else await asyncio.to_thread(store.get_task, task_id, owner_id)
     except KeyError:
         raise HTTPException(404, "任务不存在")
     except Exception as exc:
@@ -1253,11 +1400,12 @@ async def task_result(task_id: str) -> TaskResult:
 
 
 @app.get("/tasks", response_model=List[TaskListItem])
-async def list_tasks(limit: int = 50) -> List[TaskListItem]:
+async def list_tasks(limit: int = 50, user: Optional[AuthUser] = Depends(current_user)) -> List[TaskListItem]:
     if store is None:
         raise HTTPException(503, "后端未配置 Supabase")
     try:
-        rows = await asyncio.to_thread(store.list_tasks, min(max(limit, 1), 100))
+        owner_id = user.id if isinstance(user, AuthUser) else None
+        rows = await asyncio.to_thread(store.list_tasks, min(max(limit, 1), 100)) if owner_id is None else await asyncio.to_thread(store.list_tasks, min(max(limit, 1), 100), owner_id)
     except Exception as exc:
         print(f"Supabase task list failed: {exc}")
         raise HTTPException(503, "历史任务服务暂时不可用，请稍后重试") from exc

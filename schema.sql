@@ -3,6 +3,7 @@ create extension if not exists vector;
 
 create table if not exists public.analysis_tasks (
   id uuid primary key default gen_random_uuid(),
+  user_id uuid references auth.users(id) on delete cascade,
   filename text not null,
   storage_path text not null,
   status text not null check (status in ('pending','parsing','finance_analyzing','risk_analyzing','summary_finish','error')),
@@ -20,6 +21,11 @@ create table if not exists public.analysis_reports (
 
 create index if not exists analysis_tasks_created_at_idx on public.analysis_tasks (created_at desc);
 create index if not exists analysis_tasks_status_idx on public.analysis_tasks (status);
+
+-- Existing installations created before account login can migrate safely.
+alter table public.analysis_tasks
+  add column if not exists user_id uuid references auth.users(id) on delete cascade;
+create index if not exists analysis_tasks_user_id_idx on public.analysis_tasks (user_id, created_at desc);
 
 -- Durable SSE audit trail. Clients can replay rows after a network
 -- interruption by sending Last-Event-ID on the next connection.

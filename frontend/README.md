@@ -12,7 +12,7 @@ npm run dev
 
 默认访问 `http://localhost:3000`。后端地址由 `NEXT_PUBLIC_API_BASE_URL` 控制；standalone 容器启动时会写入 `public/runtime-config.js`，因此 Render 可以在运行时切换后端域名而不依赖重新构建前端代码。
 
-页面默认显示空白工作台。点击“2025 年报示例”中的阿里、腾讯或百度后，前端会读取仓库内置 PDF，调用 FastAPI 创建真实任务，并通过 SSE 实时展示解析、RAG、Agent 输出和最终报告；不会使用预设结果。
+打开首页会先进入邮箱+密码登录页；登录成功后才会加载当前账号的历史任务。点击“2025 年报示例”中的阿里、腾讯或百度后，前端会读取仓库内置 PDF，调用 FastAPI 创建真实任务，并通过 SSE 实时展示解析、RAG、Agent 输出和最终报告；不会使用预设结果。
 
 ## API 约定
 
