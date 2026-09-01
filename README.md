@@ -82,3 +82,8 @@ Set-Location frontend
 npm run typecheck
 npm run build
 ```
+
+本地联调记录：Python 单元测试与 Next.js 类型检查、生产构建均已通过。若上传接口返回
+`503`，先访问 `/healthz`；当 `event_replay` 显示 `unavailable_run_schema_sql` 或
+`storage` 不可用时，需在当前 Supabase 项目执行根目录 `schema.sql` 并确认
+`annual-reports` 私有 bucket 已创建。未完成这一步时，系统会保留错误状态，不会伪造报告结果。
