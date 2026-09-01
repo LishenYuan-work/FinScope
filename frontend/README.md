@@ -29,4 +29,6 @@ npm run build
 npm run start
 ```
 
+`npm run start` 会自动同步 standalone 所需的静态资源后启动；Docker 镜像使用同一产物中的 `server.js`。
+
 项目使用 Next standalone 输出，可直接使用 `Dockerfile` 部署到 Render 或其他容器平台。
