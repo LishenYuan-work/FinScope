@@ -67,9 +67,9 @@ class AgentState(TypedDict, total=False):
     task_id: str
     file_path: str
     status: TaskStatus
-    document_text: str
-    tables: List[Dict[str, Any]]
-    chunks: List[Dict[str, Any]]
+    page_count: int
+    chunk_count: int
+    table_count: int
     finance: Dict[str, Any]
     risks: Dict[str, Any]
     report_markdown: str
@@ -601,7 +601,16 @@ class ReportAgents:
             await self._progress(state["task_id"], "document_parser", "向量库暂不可用，将使用页级片段继续分析。")
         self.rag_tool.fallback_chunks[state["task_id"]] = parsed["chunks"]
         await self._progress(state["task_id"], "document_parser", f"文档解析完成：{parsed['page_count']} 页、{len(parsed['chunks'])} 个片段、{len(parsed['tables'])} 张表格已准备好。")
-        return {**state, "status": "parsing", "document_text": parsed["text"], "tables": parsed["tables"], "chunks": parsed["chunks"]}
+        # Keep the graph state small: agents retrieve evidence through RAG, so
+        # retaining the complete PDF text/chunk list here would duplicate a
+        # potentially hundreds-of-pages document across every subsequent node.
+        return {
+            **state,
+            "status": "parsing",
+            "page_count": parsed["page_count"],
+            "chunk_count": len(parsed["chunks"]),
+            "table_count": len(parsed["tables"]),
+        }
 
     async def finance(self, state: AgentState) -> AgentState:
         self.store.update_task(state["task_id"], "finance_analyzing")
