@@ -3,7 +3,8 @@ import os
 import unittest
 
 from app import main as backend
-from app.main import JsonReportParser, ReportAgents, _env_seconds, format_sse, read_pdf_upload
+from app.main import AgentState, JsonReportParser, ReportAgents, _env_seconds, format_sse, read_pdf_upload
+from langgraph.graph import END, START, StateGraph
 
 
 class FakeUpload:
@@ -160,6 +161,22 @@ class DeploymentSmokeTests(unittest.TestCase):
         terminal_index = next(index for index, item in enumerate(events) if item == ("status", {"status": "summary_finish"}))
         final_output_index = next(index for index, item in enumerate(events) if item[0] == "agent" and item[1].get("agent") == "industry_summary")
         self.assertLess(final_output_index, terminal_index)
+
+    def test_langgraph_node_names_do_not_shadow_state_keys(self):
+        async def passthrough(state):
+            return state
+
+        graph = StateGraph(AgentState)
+        graph.add_node("parsing_agent", passthrough)
+        graph.add_node("finance_agent", passthrough)
+        graph.add_node("risk_agent", passthrough)
+        graph.add_node("summary_agent", passthrough)
+        graph.add_edge(START, "parsing_agent")
+        graph.add_edge("parsing_agent", "finance_agent")
+        graph.add_edge("finance_agent", "risk_agent")
+        graph.add_edge("risk_agent", "summary_agent")
+        graph.add_edge("summary_agent", END)
+        graph.compile()
 
 
 if __name__ == "__main__":

@@ -47,6 +47,8 @@ npm run dev
 
 打开 [http://localhost:3000](http://localhost:3000)。后端诊断检查为 [http://localhost:8000/healthz](http://localhost:8000/healthz)，会明确显示 `configuration: ready`、`event_replay` 和 `storage` 状态或缺失的变量名，但不会输出密钥；执行 `schema.sql` 并确保 `annual-reports` bucket 存在后，相关状态会在下一次检查（最多约 30 秒）自动变为 `available`，无需重启服务。部署编排使用严格的 [http://localhost:8000/readyz](http://localhost:8000/readyz)：只有 Supabase、事件回放表、Storage bucket 和模型变量全部就绪才返回 HTTP 200，Render Blueprint 已将健康检查切换到该地址。
 
+如果 `/healthz` 显示 `event_replay: unavailable_run_schema_sql`，说明当前 Supabase 项目还没有完整执行数据库脚本。登录对应项目的 Supabase Dashboard，进入 **SQL Editor**，粘贴并运行仓库根目录 `schema.sql` 的全部内容；然后确认 Storage 中存在名为 `annual-reports` 的私有 bucket。重新访问 `/healthz`，看到 `event_replay: available`、`storage: available` 后，再访问 `/readyz`，应返回 HTTP 200。脚本使用 `if not exists` 和 `create or replace`，重复执行是安全的。
+
 ## 接口
 
 `POST /tasks` 上传字段 `file`；`GET /stream/{task_id}` 订阅 SSE（支持 `Last-Event-ID` 断线补发）；`GET /tasks/{task_id}` 获取 Markdown 与 JSON 报告；`GET /tasks?limit=50` 获取历史任务。
