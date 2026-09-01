@@ -73,6 +73,8 @@ docker compose up --build
 
 前端访问 `http://localhost:3000`，后端访问 `http://localhost:8000`。仓库根目录的 `render.yaml` 已提供后端与前端两个 Render Web Service 的 Blueprint：后端使用根目录 `Dockerfile` 和严格的 `/readyz` 就绪检查，前端使用 `frontend/Dockerfile`。创建 Blueprint 后，在 Render 控制台填写标记为 `sync: false` 的密钥变量，并确认 `CORS_ALLOW_ORIGINS` 与实际前端域名一致。Docker 构建依赖网络和 Docker Desktop；本地未安装 Docker 时只能验证 Python/Next 构建，无法验证镜像构建。
 
+Compose 与 Render 都使用 `/readyz` 作为严格就绪检查；只有 Supabase schema、Storage 和模型配置全部可用时，前端容器才会启动。
+
 ## 验证命令
 
 ```powershell
