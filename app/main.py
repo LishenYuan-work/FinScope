@@ -784,6 +784,35 @@ def configuration_issues() -> List[str]:
     return list(dict.fromkeys(issues))
 
 
+def max_upload_bytes() -> int:
+    """Parse the upload limit defensively so a bad env value cannot cause 500s."""
+    try:
+        configured = int(os.getenv("MAX_UPLOAD_BYTES", str(50 * 1024 * 1024)))
+    except ValueError:
+        configured = 50 * 1024 * 1024
+    return max(1, configured)
+
+
+async def read_pdf_upload(file: UploadFile, limit: int) -> bytes:
+    """Read an upload in bounded chunks and reject non-PDF content."""
+    chunks: List[bytes] = []
+    total = 0
+    while True:
+        chunk = await file.read(1024 * 1024)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > limit:
+            raise HTTPException(400, "文件超过大小限制")
+        chunks.append(chunk)
+    data = b"".join(chunks)
+    if not data:
+        raise HTTPException(400, "文件为空")
+    if not data.startswith(b"%PDF-"):
+        raise HTTPException(400, "文件内容不是有效PDF")
+    return data
+
+
 async def emit(task_id: str, event: str, payload: Dict[str, Any]) -> None:
     global event_persistence_available
     queue = task_queue(task_id)
@@ -904,9 +933,7 @@ async def upload_pdf(background: BackgroundTasks, file: UploadFile = File(...)) 
     if store is None:
         raise HTTPException(503, "后端未配置 SUPABASE_URL 或 SUPABASE_SERVICE_KEY")
     
-    data = await file.read()
-    if not data or len(data) > int(os.getenv("MAX_UPLOAD_BYTES", str(50 * 1024 * 1024))):
-        raise HTTPException(400, "文件为空或超过大小限制")
+    data = await read_pdf_upload(file, max_upload_bytes())
     task_id = str(uuid4())
     placeholder = f"pending://{task_id}/{SupabaseStore._safe_filename(file.filename)}"
     try:
