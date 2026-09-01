@@ -977,27 +977,36 @@ async def stream(
 
     async def iterator() -> AsyncIterator[str]:
         yield "event: connected\ndata: {}\n\n"
-        replay: List[Dict[str, Any]] = []
-        if store is not None:
-            try:
-                replay = await asyncio.to_thread(store.list_events, task_id, replay_after_id)
-            except Exception as exc:
-                print(f"Supabase event replay failed for {task_id}: {exc}")
         seen_ids: set[int] = set()
         terminal = False
-        for row in replay:
-            try:
-                event_id = int(row["id"])
-                seen_ids.add(event_id)
-                event_name = str(row["event"])
-                payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
-                yield format_sse(event_name, payload, event_id)
-                terminal = terminal or (event_name == "status" and payload.get("status") in {"summary_finish", "error"})
-            except (KeyError, TypeError, ValueError):
-                continue
+        replay_count = 0
+        replay_after = replay_after_id
+        if store is not None:
+            while not terminal:
+                try:
+                    replay_page = await asyncio.to_thread(store.list_events, task_id, replay_after, 500)
+                except Exception as exc:
+                    print(f"Supabase event replay failed for {task_id}: {exc}")
+                    replay_page = []
+                if not replay_page:
+                    break
+                replay_count += len(replay_page)
+                for row in replay_page:
+                    try:
+                        event_id = int(row["id"])
+                        seen_ids.add(event_id)
+                        replay_after = max(replay_after, event_id)
+                        event_name = str(row["event"])
+                        payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
+                        yield format_sse(event_name, payload, event_id)
+                        terminal = terminal or (event_name == "status" and payload.get("status") in {"summary_finish", "error"})
+                    except (KeyError, TypeError, ValueError):
+                        continue
+                if len(replay_page) < 500:
+                    break
         if terminal:
             return
-        if current["status"] in {"summary_finish", "error"} and not replay:
+        if current["status"] in {"summary_finish", "error"} and replay_count == 0:
             payload = {"status": current["status"]}
             if current.get("error_message"):
                 payload["error"] = current["error_message"]
