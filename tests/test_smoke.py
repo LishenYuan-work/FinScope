@@ -1,6 +1,7 @@
 import asyncio
 import unittest
 
+from app import main as backend
 from app.main import JsonReportParser, ReportAgents, format_sse, read_pdf_upload
 
 
@@ -38,6 +39,35 @@ class DeploymentSmokeTests(unittest.TestCase):
         )
         metric = report["metrics"]["营业收入"]
         self.assertEqual(metric["value"], 751766.0)
+
+    def test_sse_replay_paginates_until_terminal_event(self):
+        class ReplayStore:
+            def get_task(self, _task_id):
+                return {"status": "summary_finish"}
+
+            def list_events(self, _task_id, after_id=0, limit=500):
+                if after_id == 0:
+                    return [{"id": index, "event": "agent", "payload": {"output": "片段"}} for index in range(1, limit + 1)]
+                if after_id == 500:
+                    return [{"id": 501, "event": "status", "payload": {"status": "summary_finish"}}]
+                return []
+
+        original_store = backend.store
+        original_events = backend.events
+        try:
+            backend.store = ReplayStore()
+            backend.events = {}
+
+            async def collect():
+                response = await backend.stream("task", after_id=0)
+                return [item async for item in response.body_iterator]
+
+            messages = asyncio.run(collect())
+            self.assertEqual(len(messages), 502)  # connected + 500 + terminal event
+            self.assertIn("summary_finish", messages[-1])
+        finally:
+            backend.store = original_store
+            backend.events = original_events
 
 
 if __name__ == "__main__":
