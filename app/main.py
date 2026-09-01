@@ -749,8 +749,17 @@ class ReportAgents:
                 "amount": "金额",
                 "number": "数值",
                 "unit": "单位",
+                "period": "期间",
+                "comparison": "对比",
+                "change": "变化",
+                "growth": "增幅",
+                "rate": "比率",
+                "margin": "利润率",
                 "yoy": "同比",
                 "qoq": "环比",
+                "note": "说明",
+                "notes": "说明",
+                "description": "说明",
                 "说明": "说明",
             }.get(str(name), str(name))
 
@@ -790,9 +799,9 @@ class ReportAgents:
         lines.extend(["", "## 风险与异常", ""])
         for risk in data.get("risks", []) if isinstance(data.get("risks"), list) else []:
             if not isinstance(risk, dict):
-                lines.append(f"- [unknown] {risk}")
+                lines.append(f"- [未知] {risk}")
                 continue
-            lines.append(f"- [{risk.get('level', 'unknown')}] {risk.get('title', '待确认事项')}")
+            lines.append(f"- [{risk.get('level', '未知')}] {risk.get('title', '待确认事项')}")
             if risk.get("evidence"):
                 lines.append(f"  - 证据：{risk['evidence']}")
             if risk.get("suggestion"):

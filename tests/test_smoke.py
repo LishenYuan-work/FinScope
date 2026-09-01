@@ -42,6 +42,22 @@ class DeploymentSmokeTests(unittest.TestCase):
         metric = report["metrics"]["营业收入"]
         self.assertEqual(metric["value"], 751766.0)
 
+    def test_markdown_translates_structural_metric_labels(self):
+        markdown = ReportAgents._to_markdown(
+            {
+                "company": "测试公司",
+                "period": "2025年度",
+                "metrics": {"营业收入": {"value": 100, "period": "2025年度", "comparison": "同比上升"}},
+                "risks": [],
+                "summary": "测试结论",
+                "sources": [],
+            }
+        )
+        self.assertIn("- 期间：2025年度", markdown)
+        self.assertIn("- 对比：同比上升", markdown)
+        self.assertNotIn("- period：", markdown)
+        self.assertNotIn("- comparison：", markdown)
+
     def test_sse_replay_paginates_until_terminal_event(self):
         class ReplayStore:
             def get_task(self, _task_id):
