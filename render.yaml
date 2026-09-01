@@ -1,0 +1,52 @@
+services:
+  - type: web
+    name: finscope-backend
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /readyz
+    envVars:
+      - key: LLM_PROVIDER
+        value: deepseek
+      - key: DEEPSEEK_API_KEY
+        sync: false
+      - key: DEEPSEEK_MODEL
+        value: deepseek-chat
+      - key: DEEPSEEK_BASE_URL
+        value: https://api.deepseek.com
+      - key: EMBEDDING_PROVIDER
+        value: qwen
+      - key: DASHSCOPE_API_KEY
+        sync: false
+      - key: DASHSCOPE_BASE_URL
+        value: https://dashscope.aliyuncs.com/compatible-mode/v1
+      - key: QWEN_EMBEDDING_MODEL
+        value: text-embedding-v2
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_KEY
+        sync: false
+      - key: SUPABASE_STORAGE_BUCKET
+        value: annual-reports
+      - key: SUPABASE_STORAGE_AUTO_CREATE
+        value: "true"
+      - key: CORS_ALLOW_ORIGINS
+        value: https://finscope-frontend.onrender.com
+      - key: MAX_CONCURRENT_ANALYSES
+        value: "1"
+      - key: MODEL_REQUEST_TIMEOUT_SECONDS
+        value: "90"
+      - key: EMBEDDING_REQUEST_TIMEOUT_SECONDS
+        value: "45"
+
+  - type: web
+    name: finscope-frontend
+    runtime: docker
+    plan: free
+    dockerfilePath: ./frontend/Dockerfile
+    dockerContext: ./frontend
+    healthCheckPath: /
+    envVars:
+      - key: NEXT_PUBLIC_API_BASE_URL
+        value: https://finscope-backend.onrender.com

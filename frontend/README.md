@@ -10,9 +10,9 @@ npm install
 npm run dev
 ```
 
-默认访问 `http://localhost:3000`。后端地址由 `NEXT_PUBLIC_API_BASE_URL` 控制。
+默认访问 `http://localhost:3000`。后端地址由 `NEXT_PUBLIC_API_BASE_URL` 控制；standalone 容器启动时会写入 `public/runtime-config.js`，因此 Render 可以在运行时切换后端域名而不依赖重新构建前端代码。
 
-默认开启本地演示数据（`NEXT_PUBLIC_DEMO_MODE=true`），打开页面即可查看仪表盘、图表、风险洞察和示例报告；接入 FastAPI 后可设置为 `false`，上传真实 PDF。
+页面默认显示空白工作台。点击“2025 年报示例”中的阿里、腾讯或百度后，前端会读取仓库内置 PDF，调用 FastAPI 创建真实任务，并通过 SSE 实时展示解析、RAG、Agent 输出和最终报告；不会使用预设结果。
 
 ## API 约定
 
@@ -29,4 +29,6 @@ npm run build
 npm run start
 ```
 
-项目使用 Next standalone 输出，可直接使用 `Dockerfile` 部署到 Render 或其他容器平台。
+`npm run start` 会自动同步 standalone 所需的静态资源后启动；Docker 镜像使用同一产物中的 `server.js`。
+
+项目使用 Next standalone 输出，可直接使用 `Dockerfile` 部署到 Render 或其他容器平台；容器入口会在启动时生成运行时 API 配置，再启动 standalone server。
