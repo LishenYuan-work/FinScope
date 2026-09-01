@@ -20,7 +20,7 @@ Copy-Item .env.example .env
 Copy-Item frontend/.env.example frontend/.env.local
 ```
 
-根目录 `.env` 至少填写模型 key 和 Supabase 配置：默认 `deepseek` 对话需要 `DEEPSEEK_API_KEY`，`qwen` 向量化需要 `DASHSCOPE_API_KEY`，以及 `SUPABASE_URL`、`SUPABASE_SERVICE_KEY`。后端会将 PDF 写入私有 Supabase Storage bucket（默认 `annual-reports`），并在启动时尝试自动创建；如果项目策略禁止自动创建，请在 Storage 页面手动创建同名私有 bucket，再保持 `SUPABASE_STORAGE_AUTO_CREATE=false`。前端 `.env.local` 只需设置 `NEXT_PUBLIC_API_BASE_URL`。`VECTOR_DB_BATCH_SIZE` 控制向量写入批次，默认值 `8` 适合 Supabase 免费实例；批次超时会自动拆分重试。
+根目录 `.env` 至少填写模型 key 和 Supabase 配置：默认 `deepseek` 对话需要 `DEEPSEEK_API_KEY`，`qwen` 向量化需要 `DASHSCOPE_API_KEY`，以及 `SUPABASE_URL`、`SUPABASE_SERVICE_KEY`。后端会将 PDF 写入私有 Supabase Storage bucket（默认 `annual-reports`），并在启动时尝试自动创建；如果项目策略禁止自动创建，请在 Storage 页面手动创建同名私有 bucket，再保持 `SUPABASE_STORAGE_AUTO_CREATE=false`。前端 `.env.local` 只需设置 `NEXT_PUBLIC_API_BASE_URL`。`VECTOR_DB_BATCH_SIZE` 控制向量写入批次，默认值 `8` 适合 Supabase 免费实例；批次超时会自动拆分重试。`MODEL_REQUEST_TIMEOUT_SECONDS` 与 `EMBEDDING_REQUEST_TIMEOUT_SECONDS` 分别限制模型和向量接口单次请求时长，超时会进入既有重试/降级流程。`MAX_CONCURRENT_ANALYSES` 控制单实例并行任务数，Render 免费实例建议保持默认 `1`。
 
 ### 使用 DeepSeek
 
@@ -45,7 +45,7 @@ npm install
 npm run dev
 ```
 
-打开 [http://localhost:3000](http://localhost:3000)。后端健康检查为 [http://localhost:8000/healthz](http://localhost:8000/healthz)。健康检查会明确显示 `configuration: ready` 或缺失的变量名，但不会输出密钥。
+打开 [http://localhost:3000](http://localhost:3000)。后端健康检查为 [http://localhost:8000/healthz](http://localhost:8000/healthz)。健康检查会明确显示 `configuration: ready` 或缺失的变量名，但不会输出密钥；执行 `schema.sql` 后，`event_replay` 会在下一次健康检查（最多约 30 秒）自动变为 `available`，无需重启服务。
 
 ## 接口
 

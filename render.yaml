@@ -33,6 +33,12 @@ services:
         value: "true"
       - key: CORS_ALLOW_ORIGINS
         value: https://finscope-frontend.onrender.com
+      - key: MAX_CONCURRENT_ANALYSES
+        value: "1"
+      - key: MODEL_REQUEST_TIMEOUT_SECONDS
+        value: "90"
+      - key: EMBEDDING_REQUEST_TIMEOUT_SECONDS
+        value: "45"
 
   - type: web
     name: finscope-frontend

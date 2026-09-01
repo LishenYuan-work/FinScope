@@ -185,6 +185,17 @@ class TaskResult(BaseModel):
     error: Optional[str] = None
 
 
+class TaskListItem(BaseModel):
+    """Stable, minimal task shape for the history sidebar."""
+
+    id: str
+    filename: str
+    status: TaskStatus
+    error_message: Optional[str] = None
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+
 class SupabaseStore:
     def __init__(self) -> None:
         url = os.getenv("SUPABASE_URL")
@@ -314,7 +325,15 @@ class SupabaseStore:
         return {**task, "report_markdown": (report or {}).get("markdown"), "report_json": (report or {}).get("report_json")}
 
     def list_tasks(self, limit: int = 50) -> List[Dict[str, Any]]:
-        return self.client.table("analysis_tasks").select("*").order("created_at", desc=True).limit(limit).execute().data or []
+        return (
+            self.client.table("analysis_tasks")
+            .select("id,filename,status,error_message,created_at,updated_at")
+            .order("created_at", desc=True)
+            .limit(limit)
+            .execute()
+            .data
+            or []
+        )
 
     def append_event(self, task_id: str, event: str, payload: Dict[str, Any]) -> Optional[int]:
         response = self.client.table("analysis_task_events").insert(
@@ -373,6 +392,8 @@ class ReportAgents:
         if not llm_key:
             raise RuntimeError(f"LLM_PROVIDER={provider} 时必须配置 {llm_key_name}")
         self.llm = ChatOpenAI(model=llm_model, temperature=0, api_key=llm_key, base_url=llm_base_url)
+        self.model_timeout_seconds = _env_seconds("MODEL_REQUEST_TIMEOUT_SECONDS", 90)
+        self.embedding_timeout_seconds = _env_seconds("EMBEDDING_REQUEST_TIMEOUT_SECONDS", 45)
 
         # DeepSeek目前没有公开embedding接口；Qwen兼容OpenAI的embedding协议，
         # 因此默认用Qwen text-embedding-v2，输出1536维，与schema.sql一致。
@@ -411,7 +432,9 @@ class ReportAgents:
         last: Exception | None = None
         for attempt in range(retries + 1):
             try:
-                result = await self.llm.ainvoke(prompt)
+                result = await asyncio.wait_for(
+                    self.llm.ainvoke(prompt), timeout=self.model_timeout_seconds
+                )
                 content = result.content if hasattr(result, "content") else str(result)
                 parsed = parser.parse(content)
                 return self._normalize_sources(self._normalize_chinese_fields(parsed))
@@ -520,7 +543,10 @@ class ReportAgents:
         return value
 
     async def _retrieve(self, state: AgentState, query: str) -> List[Dict[str, Any]]:
-        matches = await self.rag_tool.ainvoke({"task_id": state["task_id"], "query": query, "top_k": 8})
+        matches = await asyncio.wait_for(
+            self.rag_tool.ainvoke({"task_id": state["task_id"], "query": query, "top_k": 8}),
+            timeout=self.embedding_timeout_seconds,
+        )
         if not matches:
             await self.emit(state["task_id"], "warning", {"message": "未检索到相关财报片段"})
         return matches
@@ -562,7 +588,12 @@ class ReportAgents:
             for start in range(0, len(parsed["chunks"]), 24):
                 batch = parsed["chunks"][start : start + 24]
                 await self._progress(state["task_id"], "document_parser", f"正在生成第 {start + 1}-{start + len(batch)} 个片段的向量…")
-                vectors.extend(await self.embeddings.aembed_documents([c["text"] for c in batch]))
+                vectors.extend(
+                    await asyncio.wait_for(
+                        self.embeddings.aembed_documents([c["text"] for c in batch]),
+                        timeout=self.embedding_timeout_seconds,
+                    )
+                )
             await asyncio.to_thread(self.store.save_chunks, state["task_id"], parsed["chunks"], vectors)
             await self._progress(state["task_id"], "document_parser", f"向量已写入 Supabase，共 {len(vectors)} 个可检索片段。")
         except Exception as exc:
@@ -706,6 +737,7 @@ events: Dict[str, "asyncio.Queue[Dict[str, Any]]"] = {}
 event_persistence_available: Optional[bool] = None
 event_replay_state: Optional[str] = "checking"
 event_replay_checked_at = 0.0
+analysis_semaphore: Optional[asyncio.Semaphore] = None
 
 
 def task_queue(task_id: str) -> "asyncio.Queue[Dict[str, Any]]":
@@ -795,6 +827,23 @@ def configuration_issues() -> List[str]:
     return list(dict.fromkeys(issues))
 
 
+def _env_seconds(name: str, default: float) -> float:
+    """Parse a positive timeout from env without allowing bad values to crash startup."""
+    try:
+        value = float(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        value = default
+    return max(1.0, min(value, 600.0))
+
+
+def _env_int(name: str, default: int, minimum: int, maximum: int) -> int:
+    try:
+        value = int(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        value = default
+    return max(minimum, min(value, maximum))
+
+
 def max_upload_bytes() -> int:
     """Parse the upload limit defensively so a bad env value cannot cause 500s."""
     try:
@@ -869,20 +918,24 @@ async def emit(task_id: str, event: str, payload: Dict[str, Any]) -> None:
 
 async def run_graph(task_id: str, file_path: str) -> None:
     assert store is not None
+    global analysis_semaphore
+    if analysis_semaphore is None:
+        analysis_semaphore = asyncio.Semaphore(_env_int("MAX_CONCURRENT_ANALYSES", 1, 1, 4))
     try:
-        agents = ReportAgents(store, emit)
-        graph = StateGraph(AgentState)
-        # Keep node names distinct from AgentState keys; LangGraph rejects collisions.
-        graph.add_node("parsing_agent", agents.parsing)
-        graph.add_node("finance_agent", agents.finance)
-        graph.add_node("risk_agent", agents.risk)
-        graph.add_node("summary_agent", agents.summary)
-        graph.add_edge(START, "parsing_agent")
-        graph.add_edge("parsing_agent", "finance_agent")
-        graph.add_edge("finance_agent", "risk_agent")
-        graph.add_edge("risk_agent", "summary_agent")
-        graph.add_edge("summary_agent", END)
-        await graph.compile().ainvoke({"task_id": task_id, "file_path": file_path, "status": "pending"})
+        async with analysis_semaphore:
+            agents = ReportAgents(store, emit)
+            graph = StateGraph(AgentState)
+            # Keep node names distinct from AgentState keys; LangGraph rejects collisions.
+            graph.add_node("parsing_agent", agents.parsing)
+            graph.add_node("finance_agent", agents.finance)
+            graph.add_node("risk_agent", agents.risk)
+            graph.add_node("summary_agent", agents.summary)
+            graph.add_edge(START, "parsing_agent")
+            graph.add_edge("parsing_agent", "finance_agent")
+            graph.add_edge("finance_agent", "risk_agent")
+            graph.add_edge("risk_agent", "summary_agent")
+            graph.add_edge("summary_agent", END)
+            await graph.compile().ainvoke({"task_id": task_id, "file_path": file_path, "status": "pending"})
     except Exception as exc:
         try:
             store.update_task(task_id, "error", str(exc))
@@ -937,9 +990,10 @@ async def resume_task(task: Dict[str, Any]) -> None:
 
 @app.on_event("startup")
 async def startup() -> None:
-    global store
+    global store, analysis_semaphore
     try:
         store = SupabaseStore()
+        analysis_semaphore = asyncio.Semaphore(_env_int("MAX_CONCURRENT_ANALYSES", 1, 1, 4))
         asyncio.create_task(initialize_background())
     except RuntimeError:
         # Keep healthz and the local demo frontend available until secrets are configured.
@@ -1076,15 +1130,19 @@ async def task_result(task_id: str) -> TaskResult:
     return TaskResult(task_id=task_id, status=row["status"], report_markdown=row.get("report_markdown"), report_json=row.get("report_json"), error=row.get("error_message"))
 
 
-@app.get("/tasks")
-async def list_tasks(limit: int = 50) -> List[Dict[str, Any]]:
+@app.get("/tasks", response_model=List[TaskListItem])
+async def list_tasks(limit: int = 50) -> List[TaskListItem]:
     if store is None:
         raise HTTPException(503, "后端未配置 Supabase")
-    return store.list_tasks(min(max(limit, 1), 100))
+    return [TaskListItem.model_validate(item) for item in store.list_tasks(min(max(limit, 1), 100))]
 
 
 @app.get("/healthz")
 async def healthz() -> Dict[str, str]:
+    # Re-check periodically so running the schema SQL after boot clears the
+    # degraded event-replay state without requiring a service restart.
+    if store is not None and time.monotonic() - event_replay_checked_at > 30:
+        await probe_event_replay()
     issues = configuration_issues()
     event_replay = "not_configured"
     if store is not None:

@@ -1,8 +1,9 @@
 import asyncio
+import os
 import unittest
 
 from app import main as backend
-from app.main import JsonReportParser, ReportAgents, format_sse, read_pdf_upload
+from app.main import JsonReportParser, ReportAgents, _env_seconds, format_sse, read_pdf_upload
 
 
 class FakeUpload:
@@ -68,6 +69,21 @@ class DeploymentSmokeTests(unittest.TestCase):
         finally:
             backend.store = original_store
             backend.events = original_events
+
+    def test_timeout_env_is_bounded_and_defensive(self):
+        original = os.environ.get("TEST_TIMEOUT_SECONDS")
+        try:
+            os.environ["TEST_TIMEOUT_SECONDS"] = "bad"
+            self.assertEqual(_env_seconds("TEST_TIMEOUT_SECONDS", 12), 12)
+            os.environ["TEST_TIMEOUT_SECONDS"] = "9999"
+            self.assertEqual(_env_seconds("TEST_TIMEOUT_SECONDS", 12), 600)
+            os.environ["TEST_TIMEOUT_SECONDS"] = "0"
+            self.assertEqual(_env_seconds("TEST_TIMEOUT_SECONDS", 12), 1)
+        finally:
+            if original is None:
+                os.environ.pop("TEST_TIMEOUT_SECONDS", None)
+            else:
+                os.environ["TEST_TIMEOUT_SECONDS"] = original
 
 
 if __name__ == "__main__":
