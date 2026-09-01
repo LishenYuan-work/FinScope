@@ -10,6 +10,7 @@ import json
 import os
 import re
 import tempfile
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, AsyncIterator, Dict, List, Literal, Optional, TypedDict
@@ -692,10 +693,31 @@ store: SupabaseStore | None = None
 # analysis_task_events, so a process restart does not erase the audit trail.
 events: Dict[str, "asyncio.Queue[Dict[str, Any]]"] = {}
 event_persistence_available: Optional[bool] = None
+event_replay_state: Optional[str] = "checking"
+event_replay_checked_at = 0.0
 
 
 def task_queue(task_id: str) -> "asyncio.Queue[Dict[str, Any]]":
     return events.setdefault(task_id, asyncio.Queue(maxsize=1000))
+
+
+async def probe_event_replay() -> None:
+    """Probe the optional replay table without blocking health checks."""
+    global event_persistence_available, event_replay_state, event_replay_checked_at
+    if store is None:
+        event_replay_state = "not_configured"
+        return
+    try:
+        await asyncio.wait_for(
+            asyncio.to_thread(store.client.table("analysis_task_events").select("id").limit(1).execute),
+            timeout=3.0,
+        )
+        event_replay_state = "available"
+        event_persistence_available = True
+    except Exception:
+        event_replay_state = "unavailable_run_schema_sql"
+        event_persistence_available = False
+    event_replay_checked_at = time.monotonic()
 
 
 def format_sse(event: str, payload: Dict[str, Any], event_id: Optional[int] = None) -> str:
@@ -848,15 +870,22 @@ async def startup() -> None:
     try:
         store = SupabaseStore()
         if os.getenv("SUPABASE_STORAGE_AUTO_CREATE", "true").strip().lower() in {"1", "true", "yes"}:
-            await asyncio.to_thread(store.ensure_storage_bucket)
+            try:
+                await asyncio.wait_for(asyncio.to_thread(store.ensure_storage_bucket), timeout=8.0)
+            except asyncio.TimeoutError:
+                print("Supabase Storage bucket check timed out; continuing in degraded mode")
         try:
-            recoverable = await asyncio.to_thread(store.list_recoverable_tasks)
+            recoverable = await asyncio.wait_for(asyncio.to_thread(store.list_recoverable_tasks), timeout=8.0)
+        except asyncio.TimeoutError:
+            recoverable = []
+            print("Recoverable task scan timed out; continuing without automatic recovery")
         except Exception as exc:
             recoverable = []
             print(f"Recoverable task scan failed: {exc}")
         for task in recoverable:
             task_queue(str(task["id"]))
             asyncio.create_task(resume_task(task))
+        asyncio.create_task(probe_event_replay())
     except RuntimeError:
         # Keep healthz and the local demo frontend available until secrets are configured.
         store = None
@@ -988,17 +1017,10 @@ async def list_tasks(limit: int = 50) -> List[Dict[str, Any]]:
 
 @app.get("/healthz")
 async def healthz() -> Dict[str, str]:
-    global event_persistence_available
     issues = configuration_issues()
     event_replay = "not_configured"
     if store is not None:
-        try:
-            await asyncio.to_thread(store.client.table("analysis_task_events").select("id").limit(1).execute)
-            event_replay = "available"
-            event_persistence_available = True
-        except Exception:
-            event_replay = "unavailable_run_schema_sql"
-            event_persistence_available = False
+        event_replay = event_replay_state or "checking"
     degraded = bool(issues) or event_replay not in {"available", "not_configured"}
     return {
         "status": "ok" if not degraded else "degraded",
