@@ -32,7 +32,7 @@ services:
       - key: SUPABASE_STORAGE_AUTO_CREATE
         value: "true"
       - key: CORS_ALLOW_ORIGINS
-        value: https://finscope-frontend.onrender.com
+        value: https://finscope-frontend-ug49.onrender.com
       - key: MAX_CONCURRENT_ANALYSES
         value: "1"
       - key: MODEL_REQUEST_TIMEOUT_SECONDS
@@ -49,4 +49,4 @@ services:
     healthCheckPath: /
     envVars:
       - key: NEXT_PUBLIC_API_BASE_URL
-        value: https://finscope-backend.onrender.com
+        value: https://finscope-backend-637y.onrender.com
