@@ -3,7 +3,7 @@ import os
 import unittest
 
 from app import main as backend
-from app.main import AgentState, JsonReportParser, ReportAgents, _env_seconds, format_sse, read_pdf_upload
+from app.main import AgentState, JsonReportParser, ReportAgents, SupabaseStore, _env_seconds, format_sse, read_pdf_upload
 from langgraph.graph import END, START, StateGraph
 
 
@@ -85,6 +85,45 @@ class DeploymentSmokeTests(unittest.TestCase):
                 os.environ.pop("TEST_TIMEOUT_SECONDS", None)
             else:
                 os.environ["TEST_TIMEOUT_SECONDS"] = original
+
+    def test_storage_upload_retries_transient_failure(self):
+        class Bucket:
+            def __init__(self):
+                self.calls = 0
+
+            def upload(self, _path, _content, _options):
+                self.calls += 1
+                if self.calls == 1:
+                    raise ConnectionError("transient TLS EOF")
+
+        class Storage:
+            def __init__(self, bucket):
+                self.bucket = bucket
+
+            def from_(self, _name):
+                return self.bucket
+
+        class Client:
+            def __init__(self, bucket):
+                self.storage = Storage(bucket)
+
+        bucket = Bucket()
+        store = object.__new__(SupabaseStore)
+        store.storage_bucket = "annual-reports"
+        store.client = Client(bucket)
+        original = os.environ.get("STORAGE_UPLOAD_RETRIES")
+        try:
+            os.environ["STORAGE_UPLOAD_RETRIES"] = "2"
+            self.assertEqual(
+                store.upload_document("task", "report.pdf", b"%PDF-1.7"),
+                "supabase://annual-reports/task/report.pdf",
+            )
+            self.assertEqual(bucket.calls, 2)
+        finally:
+            if original is None:
+                os.environ.pop("STORAGE_UPLOAD_RETRIES", None)
+            else:
+                os.environ["STORAGE_UPLOAD_RETRIES"] = original
 
     def test_readiness_requires_event_replay_and_configuration(self):
         original_store = backend.store
