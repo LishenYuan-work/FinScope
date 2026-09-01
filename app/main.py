@@ -203,7 +203,10 @@ class SupabaseStore:
         """Create the private bucket on first boot when the service key permits it."""
         try:
             buckets = self.client.storage.list_buckets()
-            names = {item.get("name") for item in buckets if isinstance(item, dict)}
+            names = {
+                item.get("name") if isinstance(item, dict) else getattr(item, "name", None)
+                for item in buckets
+            }
             if self.storage_bucket not in names:
                 self.client.storage.create_bucket(self.storage_bucket, options={"public": False})
         except Exception as exc:
