@@ -136,7 +136,8 @@ function metricNumber(value: unknown): number | null {
   if (typeof value === "number" && Number.isFinite(value)) return value;
   if (typeof value === "object" && value !== null) {
     const objectValue = value as Record<string, unknown>;
-    for (const key of ["value", "current", "amount", "number"]) {
+    const preferredKeys = ["数值", "金额", "本期", "当前值", "amount", "number", "current", "value"];
+    for (const key of preferredKeys) {
       const candidate = objectValue[key];
       if (typeof candidate === "number" && Number.isFinite(candidate)) return candidate;
       if (typeof candidate === "string") {
@@ -144,7 +145,8 @@ function metricNumber(value: unknown): number | null {
         if (match) return Number(match[0].replaceAll(",", ""));
       }
     }
-    for (const candidate of Object.values(objectValue)) {
+    for (const [key, candidate] of Object.entries(objectValue)) {
+      if (["同比", "同比变化", "环比", "环比变化", "yoy", "qoq", "growth", "change"].some((token) => key.toLowerCase().includes(token))) continue;
       if (typeof candidate === "string") {
         const match = candidate.match(/[-+]?\d[\d,]*(?:\.\d+)?/);
         if (match) return Number(match[0].replaceAll(",", ""));
@@ -162,7 +164,7 @@ function metricLabel(value: unknown) {
   const numeric = metricNumber(value);
   if (typeof value === "object" && value !== null) {
     const item = value as Record<string, unknown>;
-    for (const key of ["value", "current", "amount", "number"]) {
+    for (const key of ["数值", "金额", "本期", "当前值", "amount", "number", "current", "value"]) {
       if (typeof item[key] === "string" && item[key].trim()) return item[key];
     }
     const unit = typeof item.unit === "string" ? ` ${item.unit}` : "";
