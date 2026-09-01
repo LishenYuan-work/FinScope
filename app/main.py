@@ -13,7 +13,7 @@ import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, AsyncIterator, Dict, List, Literal, Optional, TypedDict
+from typing import Any, AsyncIterator, Callable, Dict, List, Literal, Optional, TypedDict
 from uuid import uuid4
 
 from dotenv import load_dotenv
@@ -210,6 +210,20 @@ class SupabaseStore:
         cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", Path(filename).name).strip("._")
         return cleaned[:160] or "annual-report.pdf"
 
+    @staticmethod
+    def _read_with_retries(operation: Callable[[], Any], attempts: int = 3) -> Any:
+        """Retry transient Supabase reads without retrying non-idempotent writes."""
+        last_error: Optional[Exception] = None
+        for attempt in range(max(1, attempts)):
+            try:
+                return operation()
+            except Exception as exc:
+                last_error = exc
+                if attempt + 1 < attempts:
+                    time.sleep(min(2.0, 0.25 * (2**attempt)))
+        assert last_error is not None
+        raise last_error
+
     def ensure_storage_bucket(self) -> None:
         """Create the private bucket on first boot when the service key permits it."""
         try:
@@ -231,7 +245,7 @@ class SupabaseStore:
         }
 
     def storage_bucket_exists(self) -> bool:
-        buckets = self.client.storage.list_buckets()
+        buckets = self._read_with_retries(self.client.storage.list_buckets)
         return self.storage_bucket in self._bucket_names(buckets)
 
     def upload_document(self, task_id: str, filename: str, content: bytes) -> str:
@@ -267,7 +281,7 @@ class SupabaseStore:
         bucket, separator, path = target.partition("/")
         if not separator or not bucket or not path:
             raise ValueError("无效的 Supabase Storage 路径")
-        return self.client.storage.from_(bucket).download(path)
+        return self._read_with_retries(lambda: self.client.storage.from_(bucket).download(path))
 
     def delete_document(self, storage_path: str) -> None:
         if not storage_path.startswith("supabase://"):
@@ -329,16 +343,26 @@ class SupabaseStore:
             upsert_batch(rows[start : start + batch_size])
 
     def search_chunks(self, task_id: str, vector: List[float], limit: int = 8) -> List[Dict[str, Any]]:
-        response = self.client.rpc(
-            "match_document_chunks",
-            {"query_embedding": vector, "match_task_id": task_id, "match_count": limit},
-        ).execute()
+        response = self._read_with_retries(
+            lambda: self.client.rpc(
+                "match_document_chunks",
+                {"query_embedding": vector, "match_task_id": task_id, "match_count": limit},
+            ).execute()
+        )
         return response.data or []
 
     def get_task(self, task_id: str) -> Dict[str, Any]:
         try:
-            task = self.client.table("analysis_tasks").select("*").eq("id", task_id).single().execute().data
-            report_response = self.client.table("analysis_reports").select("markdown,report_json").eq("task_id", task_id).maybe_single().execute()
+            task = self._read_with_retries(
+                lambda: self.client.table("analysis_tasks").select("*").eq("id", task_id).single().execute()
+            ).data
+            report_response = self._read_with_retries(
+                lambda: self.client.table("analysis_reports")
+                .select("markdown,report_json")
+                .eq("task_id", task_id)
+                .maybe_single()
+                .execute()
+            )
             report = getattr(report_response, "data", None) if report_response else None
         except Exception as exc:
             # Supabase's single() raises PGRST116 when no row exists.
@@ -350,15 +374,14 @@ class SupabaseStore:
         return {**task, "report_markdown": (report or {}).get("markdown"), "report_json": (report or {}).get("report_json")}
 
     def list_tasks(self, limit: int = 50) -> List[Dict[str, Any]]:
-        return (
-            self.client.table("analysis_tasks")
+        response = self._read_with_retries(
+            lambda: self.client.table("analysis_tasks")
             .select("id,filename,status,error_message,created_at,updated_at")
             .order("created_at", desc=True)
             .limit(limit)
             .execute()
-            .data
-            or []
         )
+        return response.data or []
 
     def append_event(self, task_id: str, event: str, payload: Dict[str, Any]) -> Optional[int]:
         response = self.client.table("analysis_task_events").insert(
@@ -369,8 +392,8 @@ class SupabaseStore:
         return int(value) if value is not None else None
 
     def list_events(self, task_id: str, after_id: int = 0, limit: int = 500) -> List[Dict[str, Any]]:
-        response = (
-            self.client.table("analysis_task_events")
+        response = self._read_with_retries(
+            lambda: self.client.table("analysis_task_events")
             .select("id,event,payload,created_at")
             .eq("task_id", task_id)
             .gt("id", after_id)
@@ -382,7 +405,13 @@ class SupabaseStore:
 
     def list_recoverable_tasks(self) -> List[Dict[str, Any]]:
         active = ["pending", "parsing", "finance_analyzing", "risk_analyzing"]
-        return self.client.table("analysis_tasks").select("id,storage_path,status").in_("status", active).execute().data or []
+        response = self._read_with_retries(
+            lambda: self.client.table("analysis_tasks")
+            .select("id,storage_path,status")
+            .in_("status", active)
+            .execute()
+        )
+        return response.data or []
 
 
 class ReportAgents:
