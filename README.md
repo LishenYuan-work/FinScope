@@ -75,6 +75,7 @@ docker compose up --build
 
 ```powershell
 python -m py_compile app/main.py
+python -m unittest discover -s tests -v
 Set-Location frontend
 npm run typecheck
 npm run build
