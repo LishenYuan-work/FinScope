@@ -233,6 +233,14 @@ class SupabaseStore:
             raise ValueError("无效的 Supabase Storage 路径")
         return self.client.storage.from_(bucket).download(path)
 
+    def delete_document(self, storage_path: str) -> None:
+        if not storage_path.startswith("supabase://"):
+            return
+        target = storage_path.removeprefix("supabase://")
+        bucket, separator, path = target.partition("/")
+        if separator and bucket and path:
+            self.client.storage.from_(bucket).remove([path])
+
     def update_storage_path(self, task_id: str, storage_path: str) -> None:
         self.client.table("analysis_tasks").update({"storage_path": storage_path}).eq("id", task_id).execute()
 
@@ -948,6 +956,7 @@ async def upload_pdf(background: BackgroundTasks, file: UploadFile = File(...)) 
     data = await read_pdf_upload(file, max_upload_bytes())
     task_id = str(uuid4())
     placeholder = f"pending://{task_id}/{SupabaseStore._safe_filename(file.filename)}"
+    storage_path: Optional[str] = None
     try:
         store.create_task(file.filename, placeholder, task_id=task_id)
         storage_path = await asyncio.to_thread(store.upload_document, task_id, file.filename, data)
@@ -956,6 +965,11 @@ async def upload_pdf(background: BackgroundTasks, file: UploadFile = File(...)) 
         temp.write(data)
         temp.close()
     except Exception as exc:
+        if storage_path:
+            try:
+                await asyncio.to_thread(store.delete_document, storage_path)
+            except Exception as cleanup_exc:
+                print(f"Uploaded document cleanup failed for {task_id}: {cleanup_exc}")
         try:
             store.update_task(task_id, "error", f"文件持久化失败: {exc}")
         except Exception:
