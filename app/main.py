@@ -809,27 +809,35 @@ async def probe_event_replay() -> None:
         event_replay_state = "not_configured"
         storage_state = "not_configured"
         return
-    try:
-        await asyncio.wait_for(
-            asyncio.to_thread(store.client.table("analysis_task_events").select("id").limit(1).execute),
-            timeout=3.0,
-        )
-        event_replay_state = "available"
-        event_persistence_available = True
-    except Exception:
-        event_replay_state = "unavailable_run_schema_sql"
-        event_persistence_available = False
-    try:
-        bucket_exists = await asyncio.wait_for(
-            asyncio.to_thread(store.storage_bucket_exists),
-            timeout=3.0,
-        )
-        storage_state = "available" if bucket_exists else "missing_create_bucket"
-    except asyncio.TimeoutError:
-        storage_state = "unavailable_timeout"
-    except Exception as exc:
-        storage_state = "unavailable"
-        print(f"Supabase Storage bucket probe failed: {exc}")
+
+    async def probe_events() -> tuple[str, bool]:
+        try:
+            await asyncio.wait_for(
+                asyncio.to_thread(store.client.table("analysis_task_events").select("id").limit(1).execute),
+                timeout=8.0,
+            )
+            return "available", True
+        except Exception:
+            return "unavailable_run_schema_sql", False
+
+    async def probe_storage() -> str:
+        try:
+            bucket_exists = await asyncio.wait_for(
+                asyncio.to_thread(store.storage_bucket_exists),
+                timeout=8.0,
+            )
+            return "available" if bucket_exists else "missing_create_bucket"
+        except asyncio.TimeoutError:
+            return "unavailable_timeout"
+        except Exception as exc:
+            print(f"Supabase Storage bucket probe failed: {exc}")
+            return "unavailable"
+
+    # Run independent network probes together so a slow first TLS handshake
+    # does not double the readiness latency on small Render instances.
+    (event_replay_state, event_persistence_available), storage_state = await asyncio.gather(
+        probe_events(), probe_storage()
+    )
     event_replay_checked_at = time.monotonic()
 
 
