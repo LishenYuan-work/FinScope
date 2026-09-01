@@ -85,6 +85,47 @@ class DeploymentSmokeTests(unittest.TestCase):
             else:
                 os.environ["TEST_TIMEOUT_SECONDS"] = original
 
+    def test_summary_streams_final_output_before_terminal_status(self):
+        class FakeStore:
+            def __init__(self):
+                self.calls = []
+
+            def save_report(self, task_id, markdown, report_json):
+                self.calls.append(("save", task_id))
+
+            def update_task(self, task_id, status):
+                self.calls.append(("status", task_id, status))
+
+        async def collect():
+            agents = object.__new__(ReportAgents)
+            agents.store = FakeStore()
+            agents.report_parser = object()
+            events = []
+
+            async def emit(task_id, event, payload):
+                events.append((event, payload))
+
+            async def invoke_json(_prompt, _parser):
+                return {
+                    "company": "测试公司",
+                    "period": "2025年度",
+                    "metrics": {},
+                    "risks": [],
+                    "summary": "测试结论",
+                    "industry_comparison": {},
+                    "sources": [],
+                }
+
+            agents.emit = emit
+            agents._invoke_json = invoke_json
+            await agents.summary({"task_id": "task", "finance": {}, "risks": {}})
+            return events
+
+        events = asyncio.run(collect())
+        terminal_index = next(index for index, item in enumerate(events) if item == ("status", {"status": "summary_finish"}))
+        final_output_index = next(index for index, item in enumerate(events) if item[0] == "agent" and item[1].get("agent") == "industry_summary")
+        self.assertLess(final_output_index, terminal_index)
+
 
 if __name__ == "__main__":
     unittest.main()

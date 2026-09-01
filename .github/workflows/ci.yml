@@ -34,3 +34,13 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npm run build
+
+  containers:
+    runs-on: ubuntu-latest
+    needs: [backend, frontend]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build backend image
+        run: docker build --tag finscope-backend:ci .
+      - name: Build frontend image
+        run: docker build --tag finscope-frontend:ci ./frontend

@@ -650,8 +650,11 @@ class ReportAgents:
         markdown = self._to_markdown(result)
         self.store.save_report(state["task_id"], markdown, result)
         self.store.update_task(state["task_id"], "summary_finish")
-        await self.emit(state["task_id"], "status", {"status": "summary_finish"})
+        # Send the final agent output before the terminal status. Browsers close
+        # EventSource as soon as summary_finish arrives, so reversing this order
+        # guarantees the rendered report is also visible in the live stream.
         await self.emit(state["task_id"], "agent", {"agent": "industry_summary", "output": markdown})
+        await self.emit(state["task_id"], "status", {"status": "summary_finish"})
         return {**state, "status": "summary_finish", "report_json": result, "report_markdown": markdown}
 
     @staticmethod
