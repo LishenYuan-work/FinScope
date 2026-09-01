@@ -957,7 +957,15 @@ async def stream(
             if event_name == "status" and payload.get("status") in {"summary_finish", "error"}:
                 break
 
-    return StreamingResponse(iterator(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+    return StreamingResponse(
+        iterator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @app.get("/tasks/{task_id}", response_model=TaskResult)
