@@ -939,7 +939,13 @@ async def stream(
             yield format_sse("status", payload)
             return
         while True:
-            message = await queue.get()
+            try:
+                message = await asyncio.wait_for(queue.get(), timeout=15)
+            except asyncio.TimeoutError:
+                # SSE comments are ignored by EventSource but keep Render and
+                # other reverse proxies from closing a long model call.
+                yield ": keep-alive\n\n"
+                continue
             event_id = message.get("id")
             if isinstance(event_id, int) and event_id in seen_ids:
                 continue
