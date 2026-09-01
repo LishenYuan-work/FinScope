@@ -16,7 +16,7 @@ from typing import Any, AsyncIterator, Dict, List, Literal, Optional, TypedDict
 from uuid import uuid4
 
 from dotenv import load_dotenv
-from fastapi import BackgroundTasks, FastAPI, File, HTTPException, UploadFile
+from fastapi import BackgroundTasks, FastAPI, File, Header, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
@@ -191,9 +191,49 @@ class SupabaseStore:
         if not url or not key:
             raise RuntimeError("SUPABASE_URL 与 SUPABASE_SERVICE_KEY 必须配置")
         self.client: Client = create_client(url, key)
+        self.storage_bucket = os.getenv("SUPABASE_STORAGE_BUCKET", "annual-reports").strip() or "annual-reports"
 
-    def create_task(self, filename: str, storage_path: str) -> str:
-        task_id = str(uuid4())
+    @staticmethod
+    def _safe_filename(filename: str) -> str:
+        cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", Path(filename).name).strip("._")
+        return cleaned[:160] or "annual-report.pdf"
+
+    def ensure_storage_bucket(self) -> None:
+        """Create the private bucket on first boot when the service key permits it."""
+        try:
+            buckets = self.client.storage.list_buckets()
+            names = {item.get("name") for item in buckets if isinstance(item, dict)}
+            if self.storage_bucket not in names:
+                self.client.storage.create_bucket(self.storage_bucket, options={"public": False})
+        except Exception as exc:
+            # Storage may be provisioned manually or restricted by a project policy.
+            # Uploads will surface the actionable error instead of failing startup.
+            if "409" not in str(exc) and "Duplicate" not in str(exc):
+                print(f"Supabase Storage bucket check failed: {exc}")
+
+    def upload_document(self, task_id: str, filename: str, content: bytes) -> str:
+        path = f"{task_id}/{self._safe_filename(filename)}"
+        self.client.storage.from_(self.storage_bucket).upload(
+            path,
+            content,
+            {"content-type": "application/pdf", "cache-control": "3600", "upsert": "false"},
+        )
+        return f"supabase://{self.storage_bucket}/{path}"
+
+    def download_document(self, storage_path: str) -> bytes:
+        if not storage_path.startswith("supabase://"):
+            return Path(storage_path).read_bytes()
+        target = storage_path.removeprefix("supabase://")
+        bucket, separator, path = target.partition("/")
+        if not separator or not bucket or not path:
+            raise ValueError("无效的 Supabase Storage 路径")
+        return self.client.storage.from_(bucket).download(path)
+
+    def update_storage_path(self, task_id: str, storage_path: str) -> None:
+        self.client.table("analysis_tasks").update({"storage_path": storage_path}).eq("id", task_id).execute()
+
+    def create_task(self, filename: str, storage_path: str, task_id: Optional[str] = None) -> str:
+        task_id = task_id or str(uuid4())
         self.client.table("analysis_tasks").insert(
             {"id": task_id, "filename": filename, "storage_path": storage_path, "status": "pending"}
         ).execute()
@@ -263,6 +303,30 @@ class SupabaseStore:
 
     def list_tasks(self, limit: int = 50) -> List[Dict[str, Any]]:
         return self.client.table("analysis_tasks").select("*").order("created_at", desc=True).limit(limit).execute().data or []
+
+    def append_event(self, task_id: str, event: str, payload: Dict[str, Any]) -> Optional[int]:
+        response = self.client.table("analysis_task_events").insert(
+            {"task_id": task_id, "event": event, "payload": payload}
+        ).execute()
+        rows = response.data or []
+        value = rows[0].get("id") if rows and isinstance(rows[0], dict) else None
+        return int(value) if value is not None else None
+
+    def list_events(self, task_id: str, after_id: int = 0, limit: int = 500) -> List[Dict[str, Any]]:
+        response = (
+            self.client.table("analysis_task_events")
+            .select("id,event,payload,created_at")
+            .eq("task_id", task_id)
+            .gt("id", after_id)
+            .order("id")
+            .limit(limit)
+            .execute()
+        )
+        return response.data or []
+
+    def list_recoverable_tasks(self) -> List[Dict[str, Any]]:
+        active = ["pending", "parsing", "finance_analyzing", "risk_analyzing"]
+        return self.client.table("analysis_tasks").select("id,storage_path,status").in_("status", active).execute().data or []
 
 
 class ReportAgents:
@@ -373,26 +437,35 @@ class ReportAgents:
             for name, metric_value in metrics.items():
                 alias = metric_aliases.get(str(name).strip().lower(), name)
                 if isinstance(metric_value, dict):
-                    # The model often returns period-keyed strings instead of a
-                    # scalar. Expose the first evidenced scalar for charts while
-                    # retaining every original period value and source citation.
-                    has_scalar = any(
-                        isinstance(metric_value.get(key), (int, float))
-                        or (isinstance(metric_value.get(key), str) and re.match(r"^\s*[-+]?\d[\d,]*(?:\.\d+)?", metric_value[key]))
-                        for key in ("value", "current", "amount", "number")
+                    # Prefer the base-period amount over a growth percentage.
+                    # Models occasionally put 13.86% in `value` and 751766 in
+                    # `数值`; charts must use the latter without discarding yoy.
+                    def numeric(candidate: Any) -> Optional[float]:
+                        if isinstance(candidate, (int, float)) and not isinstance(candidate, bool):
+                            return float(candidate)
+                        if isinstance(candidate, str):
+                            match = re.match(r"^\s*([-+]?\d[\d,]*(?:\.\d+)?)", candidate)
+                            if match:
+                                return float(match.group(1).replace(",", ""))
+                        return None
+
+                    preferred_keys = (
+                        "数值", "金额", "本期", "当前值", "amount", "number", "current", "value"
                     )
-                    if not has_scalar:
+                    selected_key = next((key for key in preferred_keys if numeric(metric_value.get(key)) is not None), None)
+                    if selected_key is not None:
+                        metric_value["value"] = numeric(metric_value[selected_key])
+                    else:
+                        # Period-keyed model output may not use a predictable key;
+                        # skip sources and obvious change labels when selecting a
+                        # fallback scalar for chart rendering.
                         for detail_name, detail_value in metric_value.items():
-                            if detail_name == "sources":
+                            if detail_name == "sources" or any(token in str(detail_name).lower() for token in ("同比", "环比", "yoy", "qoq", "growth", "change")):
                                 continue
-                            if isinstance(detail_value, str):
-                                number_match = re.match(r"^\s*([-+]?\d[\d,]*(?:\.\d+)?)", detail_value)
-                                if number_match:
-                                    metric_value["value"] = float(number_match.group(1).replace(",", ""))
-                                    unit_match = re.search(r"单位[：:]\s*([^）)]+)", detail_value)
-                                    if unit_match and "unit" not in metric_value:
-                                        metric_value["unit"] = unit_match.group(1).strip()
-                                    break
+                            parsed = numeric(detail_value)
+                            if parsed is not None:
+                                metric_value["value"] = parsed
+                                break
                 normalized[str(alias)] = metric_value
             value["metrics"] = normalized
 
@@ -615,7 +688,23 @@ app.add_middleware(
     allow_headers=["*"],
 )
 store: SupabaseStore | None = None
-events: Dict[str, "asyncio.Queue[str]"] = {}
+# Queues only cover currently connected clients. Durable replay comes from
+# analysis_task_events, so a process restart does not erase the audit trail.
+events: Dict[str, "asyncio.Queue[Dict[str, Any]]"] = {}
+event_persistence_available: Optional[bool] = None
+
+
+def task_queue(task_id: str) -> "asyncio.Queue[Dict[str, Any]]":
+    return events.setdefault(task_id, asyncio.Queue(maxsize=1000))
+
+
+def format_sse(event: str, payload: Dict[str, Any], event_id: Optional[int] = None) -> str:
+    lines: List[str] = []
+    if event_id is not None:
+        lines.append(f"id: {event_id}")
+    lines.append(f"event: {event}")
+    lines.append("data: " + json.dumps(payload, ensure_ascii=False))
+    return "\n".join(lines) + "\n\n"
 
 
 def configuration_issues() -> List[str]:
@@ -652,19 +741,46 @@ def configuration_issues() -> List[str]:
 
 
 async def emit(task_id: str, event: str, payload: Dict[str, Any]) -> None:
-    queue = events.get(task_id)
-    if queue:
-        output = payload.get("output")
-        if event == "agent" and isinstance(output, str) and len(output) > 600:
-            chunks = [output[i : i + 600] for i in range(0, len(output), 600)]
-            for index, chunk in enumerate(chunks):
-                await queue.put(
-                    "event: agent\ndata: "
-                    + json.dumps({**payload, "output": chunk, "chunk_index": index, "chunk_total": len(chunks)}, ensure_ascii=False)
-                    + "\n\n"
+    global event_persistence_available
+    queue = task_queue(task_id)
+    output = payload.get("output")
+    messages: List[Dict[str, Any]] = []
+    if event == "agent" and isinstance(output, str) and len(output) > 600:
+        chunks = [output[i : i + 600] for i in range(0, len(output), 600)]
+        messages = [
+            {
+                "event": event,
+                "payload": {**payload, "output": chunk, "chunk_index": index, "chunk_total": len(chunks)},
+            }
+            for index, chunk in enumerate(chunks)
+        ]
+    else:
+        messages = [{"event": event, "payload": payload}]
+
+    for message in messages:
+        event_id: Optional[int] = None
+        if store is not None and event_persistence_available is not False:
+            try:
+                event_id = await asyncio.to_thread(
+                    store.append_event, task_id, message["event"], message["payload"]
                 )
-            return
-        await queue.put(f"event: {event}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n")
+                event_persistence_available = True
+            except Exception as exc:
+                # Event persistence must not stop the graph. The in-memory
+                # queue still keeps an active browser connected in degraded mode.
+                event_persistence_available = False
+                print(f"Supabase event persistence disabled: {exc}")
+        envelope = {**message, "id": event_id}
+        try:
+            queue.put_nowait(envelope)
+        except asyncio.QueueFull:
+            # Durable replay is authoritative; retain only the newest live
+            # messages when a browser has been disconnected for a long time.
+            try:
+                queue.get_nowait()
+            except asyncio.QueueEmpty:
+                pass
+            queue.put_nowait(envelope)
 
 
 async def run_graph(task_id: str, file_path: str) -> None:
@@ -693,11 +809,54 @@ async def run_graph(task_id: str, file_path: str) -> None:
             pass
 
 
+async def resume_task(task: Dict[str, Any]) -> None:
+    """Resume an unfinished task after a process restart."""
+    task_id = str(task["id"])
+    storage_path = str(task.get("storage_path") or "")
+    temp_path: Optional[str] = None
+    try:
+        if not storage_path:
+            raise FileNotFoundError("任务没有可恢复的文档路径")
+        if storage_path.startswith("supabase://"):
+            assert store is not None
+            content = await asyncio.to_thread(store.download_document, storage_path)
+            temp = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
+            temp.write(content)
+            temp.close()
+            temp_path = temp.name
+        elif Path(storage_path).is_file():
+            temp_path = storage_path
+        else:
+            raise FileNotFoundError("原始 PDF 不存在，无法恢复任务")
+        task_queue(task_id)
+        await run_graph(task_id, temp_path)
+    except Exception as exc:
+        assert store is not None
+        store.update_task(task_id, "error", str(exc))
+        await emit(task_id, "status", {"status": "error", "error": str(exc)})
+    finally:
+        if temp_path and storage_path.startswith("supabase://"):
+            try:
+                Path(temp_path).unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
 @app.on_event("startup")
 async def startup() -> None:
     global store
     try:
         store = SupabaseStore()
+        if os.getenv("SUPABASE_STORAGE_AUTO_CREATE", "true").strip().lower() in {"1", "true", "yes"}:
+            await asyncio.to_thread(store.ensure_storage_bucket)
+        try:
+            recoverable = await asyncio.to_thread(store.list_recoverable_tasks)
+        except Exception as exc:
+            recoverable = []
+            print(f"Recoverable task scan failed: {exc}")
+        for task in recoverable:
+            task_queue(str(task["id"]))
+            asyncio.create_task(resume_task(task))
     except RuntimeError:
         # Keep healthz and the local demo frontend available until secrets are configured.
         store = None
@@ -713,37 +872,83 @@ async def upload_pdf(background: BackgroundTasks, file: UploadFile = File(...)) 
     data = await file.read()
     if not data or len(data) > int(os.getenv("MAX_UPLOAD_BYTES", str(50 * 1024 * 1024))):
         raise HTTPException(400, "文件为空或超过大小限制")
-    temp = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
-    temp.write(data)
-    temp.close()
-    task_id = store.create_task(file.filename, temp.name)
-    events[task_id] = asyncio.Queue()
+    task_id = str(uuid4())
+    placeholder = f"pending://{task_id}/{SupabaseStore._safe_filename(file.filename)}"
+    try:
+        store.create_task(file.filename, placeholder, task_id=task_id)
+        storage_path = await asyncio.to_thread(store.upload_document, task_id, file.filename, data)
+        await asyncio.to_thread(store.update_storage_path, task_id, storage_path)
+        temp = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
+        temp.write(data)
+        temp.close()
+    except Exception as exc:
+        try:
+            store.update_task(task_id, "error", f"文件持久化失败: {exc}")
+        except Exception:
+            pass
+        raise HTTPException(503, f"文件持久化失败，请检查 Supabase Storage 配置: {exc}") from exc
+    task_queue(task_id)
     background.add_task(run_graph, task_id, temp.name)
     return TaskCreateResponse(task_id=task_id, status="pending")
 
 
 @app.get("/stream/{task_id}")
-async def stream(task_id: str) -> StreamingResponse:
+async def stream(
+    task_id: str,
+    last_event_id: Optional[str] = Header(default=None, alias="Last-Event-ID"),
+    after_id: Optional[int] = None,
+) -> StreamingResponse:
     if store is None:
         raise HTTPException(503, "服务尚未就绪")
     try:
         current = store.get_task(task_id)
     except KeyError:
         raise HTTPException(404, "任务不存在")
-    queue = events.setdefault(task_id, asyncio.Queue())
+    queue = task_queue(task_id)
+    try:
+        replay_after_id = max(after_id if after_id is not None else int(last_event_id or "0"), 0)
+    except ValueError:
+        replay_after_id = 0
 
     async def iterator() -> AsyncIterator[str]:
         yield "event: connected\ndata: {}\n\n"
-        if current["status"] in {"summary_finish", "error"}:
+        replay: List[Dict[str, Any]] = []
+        if store is not None:
+            try:
+                replay = await asyncio.to_thread(store.list_events, task_id, replay_after_id)
+            except Exception as exc:
+                print(f"Supabase event replay failed for {task_id}: {exc}")
+        seen_ids: set[int] = set()
+        terminal = False
+        for row in replay:
+            try:
+                event_id = int(row["id"])
+                seen_ids.add(event_id)
+                event_name = str(row["event"])
+                payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
+                yield format_sse(event_name, payload, event_id)
+                terminal = terminal or (event_name == "status" and payload.get("status") in {"summary_finish", "error"})
+            except (KeyError, TypeError, ValueError):
+                continue
+        if terminal:
+            return
+        if current["status"] in {"summary_finish", "error"} and not replay:
             payload = {"status": current["status"]}
             if current.get("error_message"):
                 payload["error"] = current["error_message"]
-            yield f"event: status\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+            yield format_sse("status", payload)
             return
         while True:
             message = await queue.get()
-            yield message
-            if '"status": "summary_finish"' in message or '"status": "error"' in message:
+            event_id = message.get("id")
+            if isinstance(event_id, int) and event_id in seen_ids:
+                continue
+            if isinstance(event_id, int):
+                seen_ids.add(event_id)
+            event_name = str(message.get("event", "message"))
+            payload = message.get("payload") if isinstance(message.get("payload"), dict) else {}
+            yield format_sse(event_name, payload, event_id if isinstance(event_id, int) else None)
+            if event_name == "status" and payload.get("status") in {"summary_finish", "error"}:
                 break
 
     return StreamingResponse(iterator(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
@@ -769,9 +974,22 @@ async def list_tasks(limit: int = 50) -> List[Dict[str, Any]]:
 
 @app.get("/healthz")
 async def healthz() -> Dict[str, str]:
+    global event_persistence_available
     issues = configuration_issues()
+    event_replay = "not_configured"
+    if store is not None:
+        try:
+            await asyncio.to_thread(store.client.table("analysis_task_events").select("id").limit(1).execute)
+            event_replay = "available"
+            event_persistence_available = True
+        except Exception:
+            event_replay = "unavailable_run_schema_sql"
+            event_persistence_available = False
+    degraded = bool(issues) or event_replay not in {"available", "not_configured"}
     return {
-        "status": "ok" if not issues else "degraded",
+        "status": "ok" if not degraded else "degraded",
         "supabase": "configured" if store is not None else "not_configured",
+        "storage_bucket": store.storage_bucket if store is not None else "not_configured",
+        "event_replay": event_replay,
         "configuration": "ready" if not issues else "missing:" + ",".join(issues),
     }

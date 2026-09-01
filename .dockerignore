@@ -1,0 +1,12 @@
+.git
+.gitignore
+.env
+.env.*
+!.env.example
+frontend/node_modules
+frontend/.next
+frontend/tsconfig.tsbuildinfo
+__pycache__
+*.py[cod]
+*.log
+*.tmp

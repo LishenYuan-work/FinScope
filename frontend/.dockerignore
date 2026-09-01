@@ -1,6 +1,8 @@
+.git
+.env
+.env.*
+!.env.example
 node_modules
 .next
-.git
-.env*
-npm-debug.log*
-*.tsbuildinfo
+tsconfig.tsbuildinfo
+*.log

@@ -15,6 +15,7 @@ import {
   FileText,
   LinkSimple,
   ListChecks,
+  MagnifyingGlass,
   Pulse,
   SealCheck,
   SidebarSimple,
@@ -37,18 +38,17 @@ import ReactMarkdown from "react-markdown";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
-const DEMO_MODE = process.env.NEXT_PUBLIC_DEMO_MODE !== "false";
-
 type Status = "pending" | "parsing" | "finance_analyzing" | "risk_analyzing" | "summary_finish" | "error";
 type AgentKey = "document_parser" | "finance_analyst" | "risk_reviewer" | "industry_summary";
 type ConnectionState = "idle" | "live" | "reconnecting" | "disconnected";
-type TaskSummary = { id: string; filename: string; status: Status; created_at?: string; error_message?: string };
+type TaskSummary = { id: string; filename: string; status: Status; created_at?: string; error_message?: string; exampleId?: string };
 type Source = { page?: number; chunk_id?: string };
 type ReportData = {
   company?: string;
   period?: string;
   metrics?: Record<string, unknown>;
   risks?: Array<{ level?: string; title?: string; evidence?: string; suggestion?: string; sources?: Source[] }>;
+  anomalies?: Array<{ title?: string; description?: string; sources?: Source[] }>;
   summary?: string;
   industry_comparison?: unknown;
   sources?: Source[];
@@ -71,48 +71,8 @@ const EMPTY_AGENTS: Record<AgentKey, AgentState> = {
   industry_summary: { status: "idle", label: "等待风险研判" },
 };
 
-const DEMO_TASK: TaskSummary = {
-  id: "demo-task-2025",
-  filename: "示例年报_2025_研究演示.pdf",
-  status: "summary_finish",
-  created_at: "2026-08-30T09:24:00.000Z",
-};
-
-const DEMO_REPORT: ReportData = {
-  company: "澜海智能制造股份有限公司",
-  period: "2025 年度",
-  metrics: {
-    营业收入: { value: 128.6, unit: "亿元", yoy: "+18.4%" },
-    归母净利润: { value: 16.8, unit: "亿元", yoy: "+22.1%" },
-    毛利率: { value: 31.7, unit: "%", yoy: "+1.8pct" },
-    经营现金流: { value: 21.4, unit: "亿元", yoy: "+35.2%" },
-    研发费用率: { value: 8.6, unit: "%", yoy: "+0.6pct" },
-    ROE: { value: 14.2, unit: "%", yoy: "+1.1pct" },
-  },
-  risks: [
-    { level: "中", title: "应收账款增速高于收入增速", evidence: "应收账款同比增长 28.3%，高于收入增速。", suggestion: "持续跟踪账期与重点客户回款。", sources: [{ page: 68, chunk_id: "p68-c2" }] },
-    { level: "低", title: "研发投入持续上升", evidence: "研发费用率升至 8.6%，短期压制利润弹性。", suggestion: "关注研发项目商业化兑现节奏。", sources: [{ page: 42, chunk_id: "p42-c1" }] },
-  ],
-  summary: "公司收入与利润保持双位数增长，经营现金流改善明显。增长质量整体稳健，但应收账款周转仍是后续跟踪重点。",
-  industry_comparison: { position: "行业中上游", note: "毛利率和研发费用率高于行业中位数" },
-  sources: [{ page: 12, chunk_id: "p12-c1" }, { page: 42, chunk_id: "p42-c1" }, { page: 68, chunk_id: "p68-c2" }],
-};
-
-const DEMO_RESULT: TaskResult = {
-  task_id: DEMO_TASK.id,
-  status: "summary_finish",
-  report_json: DEMO_REPORT,
-  report_markdown: `# 澜海智能制造股份有限公司 2025 年度投研分析报告\n\n## 核心结论\n\n${DEMO_REPORT.summary}\n\n## 财务表现\n\n- 营业收入 128.6 亿元，同比增长 18.4%。\n- 归母净利润 16.8 亿元，同比增长 22.1%。\n- 毛利率 31.7%，同比提升 1.8pct。\n\n## 风险与跟踪\n\n- **中**：应收账款增速高于收入增速，来源：第 68 页 / p68-c2。\n- **低**：研发费用率升至 8.6%，来源：第 42 页 / p42-c1。\n\n## 行业位置\n\n公司处于行业中上游，毛利率和研发费用率高于行业中位数。\n\n## 来源片段\n\n- 第 12 页 / p12-c1\n- 第 42 页 / p42-c1\n- 第 68 页 / p68-c2`,
-};
-
-const DEMO_AGENTS: Record<AgentKey, AgentState> = {
-  document_parser: { status: "done", label: "已完成" },
-  finance_analyst: { status: "done", label: "已完成" },
-  risk_reviewer: { status: "done", label: "已完成" },
-  industry_summary: { status: "done", label: "已完成" },
-};
-
 type OfficialReport = {
+  id: string;
   company: string;
   ticker: string;
   period: string;
@@ -125,9 +85,9 @@ type OfficialReport = {
   accent: string;
 };
 
-// Official links are reference-only. The app still analyzes PDFs selected by the user.
 const OFFICIAL_REPORTS: OfficialReport[] = [
   {
+    id: "alibaba",
     company: "阿里巴巴集团",
     ticker: "BABA / 9988.HK",
     period: "FY 2025",
@@ -140,18 +100,20 @@ const OFFICIAL_REPORTS: OfficialReport[] = [
     accent: "orange",
   },
   {
+    id: "tencent",
     company: "腾讯控股",
     ticker: "0700.HK",
-    period: "2025 Annual Report",
-    format: "英文 PDF",
+    period: "FY 2025",
+    format: "官方 PDF",
     description: "腾讯投资者关系站发布的 2025 年度报告。",
     sourceLabel: "Tencent Investor Relations",
     sourceUrl: "https://www.tencent.com/investors/financial-reports/",
-    reportUrl: "https://static.www.tencent.com/uploads/2025/08/26/d1d2fb988f5e910e254b3abb41dadb0f.pdf",
+    reportUrl: "https://static.www.tencent.com/uploads/2026/04/09/5c38a9ec3c5695da42c1534d63e4be0b.pdf",
     localPath: "/examples/tencent-2025-annual-report.pdf",
     accent: "blue",
   },
   {
+    id: "baidu",
     company: "百度集团",
     ticker: "BIDU",
     period: "FY 2025",
@@ -203,8 +165,6 @@ function metricLabel(value: unknown) {
     for (const key of ["value", "current", "amount", "number"]) {
       if (typeof item[key] === "string" && item[key].trim()) return item[key];
     }
-    const firstText = Object.values(item).find((candidate) => typeof candidate === "string" && candidate.trim());
-    if (typeof firstText === "string" && numeric !== null) return firstText;
     const unit = typeof item.unit === "string" ? ` ${item.unit}` : "";
     return `${numeric === null ? "暂无" : numeric.toLocaleString("zh-CN")}${unit}`;
   }
@@ -290,19 +250,42 @@ function ConnectionBadge({ state }: { state: ConnectionState }) {
   return <span className={`connection-badge ${config[state].className}`}><span className="connection-dot" />{config[state].label}</span>;
 }
 
-function ResearchSidebar({ tasks, selectedId, open, onSelect, onNew, onClose }: { tasks: TaskSummary[]; selectedId?: string; open: boolean; onSelect: (task: TaskSummary) => void; onNew: () => void; onClose: () => void }) {
+function ResearchSidebar({ tasks, selectedId, archiveOpen, open, onSelect, onNew, onOpenArchive, onOpenCurrent, onClose }: { tasks: TaskSummary[]; selectedId?: string; archiveOpen: boolean; open: boolean; onSelect: (task: TaskSummary) => void; onNew: () => void; onOpenArchive: () => void; onOpenCurrent: () => void; onClose: () => void }) {
   return <>
     {open && <button aria-label="关闭历史任务栏" className="sidebar-overlay no-print" onClick={onClose} />}
     <aside className={`research-sidebar no-print ${open ? "is-open" : ""}`}>
       <div className="sidebar-head"><div className="brand-lockup"><div className="brand-mark"><ChartLineUp size={18} weight="bold" /></div><div><div className="brand-name">FinScope</div><div className="brand-caption">AI research studio</div></div></div><button aria-label="关闭侧边栏" className="sidebar-close" onClick={onClose}><X size={17} /></button></div>
       <button className="new-analysis-button" onClick={onNew}><Sparkle size={17} weight="fill" /> 新建分析 <span className="shortcut"><Command size={12} /> K</span></button>
       <div className="sidebar-section-label">工作台</div>
-      <div className="sidebar-nav"><div className="sidebar-nav-item is-active"><ListChecks size={17} />当前分析<span className="nav-count">{selectedId ? "1" : "0"}</span></div><div className="sidebar-nav-item"><BookOpenText size={17} />研究档案<span className="nav-count">{tasks.length}</span></div></div>
+      <div className="sidebar-nav"><button className={`sidebar-nav-item ${!archiveOpen ? "is-active" : ""}`} onClick={onOpenCurrent}><ListChecks size={17} />当前分析<span className="nav-count">{selectedId ? "1" : "0"}</span></button><button className={`sidebar-nav-item ${archiveOpen ? "is-active" : ""}`} onClick={onOpenArchive}><BookOpenText size={17} />研究档案<span className="nav-count">{tasks.length}</span></button></div>
       <div className="sidebar-section-label history-label">历史任务</div>
       <div className="task-list">{tasks.length === 0 ? <div className="sidebar-empty"><FileText size={18} /><span>上传第一份年报，历史分析会显示在这里。</span></div> : tasks.map((task) => <button key={task.id} onClick={() => { onSelect(task); onClose(); }} className={`task-item ${task.id === selectedId ? "is-selected" : ""}`}><div className="task-item-top"><FileText size={16} /><span>{task.filename}</span><CaretRight size={14} className="task-arrow" /></div><div className="task-item-meta"><span>{formatDate(task.created_at)}</span><StatusChip status={task.status} /></div></button>)}</div>
       <div className="sidebar-footer"><div className="secure-line"><SealCheck size={15} weight="fill" />数据仅在已配置后端处理</div><div className="sidebar-version">FinScope Console · 01</div></div>
     </aside>
   </>;
+}
+
+type ArchiveFilter = "all" | "completed" | "active" | "error";
+
+function ResearchArchive({ tasks, onSelect, onRefresh }: { tasks: TaskSummary[]; onSelect: (task: TaskSummary) => void; onRefresh: () => void }) {
+  const [query, setQuery] = useState("");
+  const [filter, setFilter] = useState<ArchiveFilter>("all");
+  const filteredTasks = useMemo(() => {
+    const normalized = query.trim().toLowerCase();
+    return tasks.filter((task) => {
+      const matchesQuery = !normalized || task.filename.toLowerCase().includes(normalized) || task.id.toLowerCase().includes(normalized);
+      const matchesFilter = filter === "all" || (filter === "completed" && task.status === "summary_finish") || (filter === "error" && task.status === "error") || (filter === "active" && task.status !== "summary_finish" && task.status !== "error");
+      return matchesQuery && matchesFilter;
+    });
+  }, [filter, query, tasks]);
+  const completedCount = tasks.filter((task) => task.status === "summary_finish").length;
+  const activeCount = tasks.filter((task) => task.status !== "summary_finish" && task.status !== "error").length;
+  return <section className="archive-page">
+    <div className="archive-hero"><div><div className="eyebrow muted-eyebrow"><BookOpenText size={14} weight="bold" /> RESEARCH ARCHIVE</div><h2>研究档案</h2><p>所有分析任务的统一入口。选择一份档案即可恢复完整指标、来源和 Markdown 报告。</p></div><button className="icon-button" aria-label="刷新研究档案" onClick={onRefresh}><ArrowClockwise size={18} /></button></div>
+    <div className="archive-summary"><div><span>全部任务</span><strong>{tasks.length}</strong></div><div><span>已完成</span><strong>{completedCount}</strong></div><div><span>处理中</span><strong>{activeCount}</strong></div><div><span>异常</span><strong>{tasks.filter((task) => task.status === "error").length}</strong></div></div>
+    <div className="archive-toolbar"><label className="archive-search"><MagnifyingGlass size={17} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索文件名或任务 ID" aria-label="搜索研究档案" /></label><select value={filter} onChange={(event) => setFilter(event.target.value as ArchiveFilter)} aria-label="筛选研究档案"><option value="all">全部状态</option><option value="completed">已完成</option><option value="active">处理中</option><option value="error">处理异常</option></select></div>
+    {filteredTasks.length === 0 ? <div className="archive-empty"><BookOpenText size={28} /><strong>{tasks.length === 0 ? "还没有研究档案" : "没有匹配的档案"}</strong><span>{tasks.length === 0 ? "上传年报或从首页示例开始一次真实分析。" : "尝试更换关键词或状态筛选。"}</span></div> : <div className="archive-grid">{filteredTasks.map((task) => <button key={task.id} className="archive-card" onClick={() => onSelect(task)}><div className="archive-card-head"><div className="archive-file-icon"><FileText size={20} weight="bold" /></div><StatusChip status={task.status} /></div><h3>{task.filename}</h3><div className="archive-card-meta"><span>{formatDate(task.created_at)}</span><span className="archive-task-id">{task.id.slice(0, 8)}</span></div><div className="archive-card-foot"><span>{task.status === "summary_finish" ? "查看完整报告" : task.status === "error" ? (task.error_message || "查看错误详情") : "继续查看执行进度"}</span><CaretRight size={15} /></div></button>)}</div>}
+  </section>;
 }
 
 function UploadPanel({ file, busy, onFile, onUpload, onClear }: { file: File | null; busy: boolean; onFile: (file: File) => void; onUpload: () => void; onClear: () => void }) {
@@ -322,7 +305,7 @@ function OfficialReportsPanel({ onLoadExample, loadingPath }: { onLoadExample: (
       <div>
         <div className="eyebrow muted-eyebrow"><BookOpenText size={14} weight="bold" /> OFFICIAL REFERENCES</div>
         <h2 id="official-reports-title">2025 年报示例</h2>
-        <p>从官方来源下载后拖入上方上传区，平台只处理你主动选择的本地 PDF。</p>
+        <p>官方 PDF 已内置在本地。点击后会创建真实任务，实时展示解析、RAG 检索、Agent 分析和中文报告生成过程。</p>
       </div>
       <span className="official-reports-note">3 SOURCES</span>
     </div>
@@ -334,7 +317,7 @@ function OfficialReportsPanel({ onLoadExample, loadingPath }: { onLoadExample: (
         <div className="official-report-period">{report.period}</div>
         <p>{report.description}</p>
         <div className="official-report-actions">
-          <button type="button" onClick={() => { if (loadingPath !== report.localPath) onLoadExample(report); }} className="official-report-link" aria-label={`载入${report.company}示例年报`}>{loadingPath === report.localPath ? <CircleNotch size={15} className="spin" /> : <FileText size={15} />} {loadingPath === report.localPath ? "载入中" : "直接载入示例"} <ArrowUpRight size={14} /></button>
+          <button type="button" onClick={() => { if (loadingPath !== report.localPath) onLoadExample(report); }} className="official-report-link" aria-label={`开始${report.company}真实分析`}>{loadingPath === report.localPath ? <CircleNotch size={15} className="spin" /> : <FileText size={15} />} {loadingPath === report.localPath ? "创建任务中" : "开始真实分析"} <ArrowUpRight size={14} /></button>
           <a href={report.reportUrl} target="_blank" rel="noreferrer" className="official-source-link">官方原件</a>
           <a href={report.sourceUrl} target="_blank" rel="noreferrer" className="official-source-link">来源页</a>
         </div>
@@ -365,7 +348,7 @@ function Snapshot({ result, status }: { result?: TaskResult; status: Status }) {
 
 function MetricCards({ report }: { report?: ReportData }) {
   const entries = Object.entries(report?.metrics ?? {}).slice(0, 6);
-  return <section className="metrics-section"><div className="section-heading metrics-heading"><div><div className="eyebrow muted-eyebrow"><ChartLineUp size={14} weight="bold" /> KEY METRICS</div><h2>核心财务指标</h2><p>从结构化 JSON 提取，可直接用于图表渲染。</p></div><span className="metric-count">{String(entries.length).padStart(2, "0")} / 06</span></div><div className="metrics-grid">{entries.length === 0 ? <div className="empty-metric">任务完成后，核心指标会显示在这里。</div> : entries.map(([key, value], index) => { const objectValue = typeof value === "object" && value !== null ? value as Record<string, unknown> : null; const yoy = typeof objectValue?.yoy === "string" ? objectValue.yoy : typeof objectValue?.["同比变化"] === "string" ? objectValue["同比变化"] as string : undefined; return <div key={key} className={`metric-card ${index === 0 ? "metric-primary" : ""}`}><div className="metric-card-top"><span>{key}</span><span className="metric-index">0{index + 1}</span></div><div className="metric-value">{metricLabel(value)}</div>{yoy ? <div className="metric-change"><ArrowUpRight size={14} />同比 {yoy}</div> : <div className="metric-source">年报结构化字段</div>}</div>; })}</div></section>;
+  return <section className="metrics-section"><div className="section-heading metrics-heading"><div><div className="eyebrow muted-eyebrow"><ChartLineUp size={14} weight="bold" /> KEY METRICS</div><h2>核心财务指标</h2><p>从结构化 JSON 提取，可直接用于图表渲染。</p></div><span className="metric-count">{String(entries.length).padStart(2, "0")} / 06</span></div><div className="metrics-grid">{entries.length === 0 ? <div className="empty-metric">任务完成后，核心指标会显示在这里。</div> : entries.map(([key, value], index) => { const objectValue = typeof value === "object" && value !== null ? value as Record<string, unknown> : null; const yoy = typeof objectValue?.yoy === "string" ? objectValue.yoy : typeof objectValue?.["同比变化"] === "string" ? objectValue["同比变化"] as string : undefined; const source = Array.isArray(objectValue?.sources) && objectValue.sources[0] && typeof objectValue.sources[0] === "object" ? objectValue.sources[0] as Record<string, unknown> : null; return <div key={key} className={`metric-card ${index === 0 ? "metric-primary" : ""}`}><div className="metric-card-top"><span>{key}</span><span className="metric-index">0{index + 1}</span></div><div className="metric-value">{metricLabel(value)}</div>{yoy ? <div className="metric-change"><ArrowUpRight size={14} />同比 {yoy}</div> : null}<div className="metric-source">{source?.page ? `来源 第 ${source.page} 页` : "年报结构化字段"}</div></div>; })}</div></section>;
 }
 
 function ChartsPanel({ report }: { report?: ReportData }) {
@@ -375,7 +358,17 @@ function ChartsPanel({ report }: { report?: ReportData }) {
 
 function RiskInsights({ report }: { report?: ReportData }) {
   const risks = report?.risks ?? [];
-  return <section className="risk-panel"><div className="section-heading"><div><div className="eyebrow muted-eyebrow"><WarningCircle size={14} weight="bold" /> RISK SIGNALS</div><h2>风险与跟踪事项</h2><p>来自风险研判 Agent 的结构化结论，保留原文页码。</p></div><span className="risk-count">{String(risks.length).padStart(2, "0")} signals</span></div>{risks.length === 0 ? <div className="risk-empty"><WarningCircle size={22} /><span>任务完成后，风险研判结果会显示在这里。</span></div> : <div className="risk-list">{risks.map((risk, index) => <div className="risk-row" key={`${risk.title}-${index}`}><div className={`risk-level risk-${(risk.level ?? "中").toLowerCase()}`}>{risk.level ?? "中"}</div><div className="risk-copy"><strong>{risk.title ?? "待确认事项"}</strong><p>{risk.evidence ?? "暂无证据摘要"}</p>{risk.suggestion && <span className="risk-suggestion">跟踪：{risk.suggestion}</span>}</div><div className="risk-source">{risk.sources?.[0]?.page ? <><span>来源页码</span><strong>第 {risk.sources[0].page} 页</strong><small>{risk.sources[0].chunk_id}</small></> : <span>未提供来源</span>}</div></div>)}</div>}</section>;
+  const anomalies = report?.anomalies ?? [];
+  return <section className="risk-panel"><div className="section-heading"><div><div className="eyebrow muted-eyebrow"><WarningCircle size={14} weight="bold" /> RISK SIGNALS</div><h2>风险与跟踪事项</h2><p>来自风险研判 Agent 的结构化结论，保留原文页码。</p></div><span className="risk-count">{String(risks.length + anomalies.length).padStart(2, "0")} signals</span></div>{risks.length === 0 && anomalies.length === 0 ? <div className="risk-empty"><WarningCircle size={22} /><span>任务完成后，风险研判结果会显示在这里。</span></div> : <><div className="risk-list">{risks.map((risk, index) => <div className="risk-row" key={`${risk.title}-${index}`}><div className={`risk-level risk-${(risk.level ?? "中").toLowerCase()}`}>{risk.level ?? "中"}</div><div className="risk-copy"><strong>{risk.title ?? "待确认事项"}</strong><p>{risk.evidence ?? "暂无证据摘要"}</p>{risk.suggestion && <span className="risk-suggestion">跟踪：{risk.suggestion}</span>}</div><div className="risk-source">{risk.sources?.[0]?.page ? <><span>来源页码</span><strong>第 {risk.sources[0].page} 页</strong><small>{risk.sources[0].chunk_id}</small></> : <span>未提供来源</span>}</div></div>)}</div>{anomalies.length > 0 && <div className="anomaly-list"><div className="anomaly-heading"><Sparkle size={14} /> 异常信号</div>{anomalies.map((item, index) => <div className="anomaly-row" key={`${item.title}-${index}`}><div><strong>{item.title ?? "待确认异常"}</strong><p>{item.description ?? "暂无异常说明"}</p></div><span>{item.sources?.[0]?.page ? `第 ${item.sources[0].page} 页` : "未提供来源"}</span></div>)}</div>}</>}</section>;
+}
+
+function IndustryComparison({ report }: { report?: ReportData }) {
+  const comparison = report?.industry_comparison;
+  if (!comparison) return <section className="comparison-panel"><div className="comparison-empty"><ChartLineUp size={22} /><span>完成分析后，行业对比结果会显示在这里。</span></div></section>;
+  const data = comparison as Record<string, unknown>;
+  const position = typeof data.position === "string" ? data.position : "行业位置待确认";
+  const rows = Array.isArray(data.peers) ? data.peers.filter((item): item is Record<string, unknown> => typeof item === "object" && item !== null) : [];
+  return <section className="comparison-panel"><div className="section-heading"><div><div className="eyebrow muted-eyebrow"><ChartLineUp size={14} weight="bold" /> INDUSTRY LENS</div><h2>行业对比</h2><p>由汇总 Agent 根据年报披露的业务与指标生成，保留可追溯上下文。</p></div><span className="comparison-position">{position}</span></div>{typeof data.note === "string" && <p className="comparison-note">{data.note}</p>}{rows.length > 0 ? <div className="comparison-table">{rows.map((row, index) => <div className="comparison-row" key={`${String(row.name)}-${index}`}><span>{String(row.name ?? "比较项")}</span><strong>{String(row.value ?? "未披露")}</strong><small>{String(row.benchmark ?? "暂无基准")}</small></div>)}</div> : <div className="comparison-note">当前报告未提供可拆分的同业对比项。</div>}</section>;
 }
 
 function ReportPreview({ result }: { result?: TaskResult }) {
@@ -383,20 +376,22 @@ function ReportPreview({ result }: { result?: TaskResult }) {
 }
 
 export default function HomePage() {
-  const [tasks, setTasks] = useState<TaskSummary[]>(DEMO_MODE ? [DEMO_TASK] : []);
-  const [selected, setSelected] = useState<TaskSummary | null>(DEMO_MODE ? DEMO_TASK : null);
+  const [tasks, setTasks] = useState<TaskSummary[]>([]);
+  const [selected, setSelected] = useState<TaskSummary | null>(null);
   const [file, setFile] = useState<File | null>(null);
-  const [result, setResult] = useState<TaskResult | undefined>(DEMO_MODE ? DEMO_RESULT : undefined);
-  const [status, setStatus] = useState<Status>(DEMO_MODE ? "summary_finish" : "pending");
-  const [agents, setAgents] = useState<Record<AgentKey, AgentState>>(DEMO_MODE ? DEMO_AGENTS : EMPTY_AGENTS);
+  const [result, setResult] = useState<TaskResult | undefined>(undefined);
+  const [status, setStatus] = useState<Status>("pending");
+  const [agents, setAgents] = useState<Record<AgentKey, AgentState>>(EMPTY_AGENTS);
   const [outputs, setOutputs] = useState<Record<string, string[]>>({});
   const [connection, setConnection] = useState<ConnectionState>("idle");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [archiveOpen, setArchiveOpen] = useState(false);
   const [exampleLoadingPath, setExampleLoadingPath] = useState("");
   const eventSource = useRef<EventSource | null>(null);
   const activeTaskRef = useRef<string | null>(null);
+  const lastEventIdRef = useRef<string>("");
   const subscribeRef = useRef<(taskId: string, retry?: number) => void>(() => undefined);
   const typingQueues = useRef<Record<string, TypingItem[]>>({});
   const typingTimers = useRef<Record<string, ReturnType<typeof setTimeout> | undefined>>({});
@@ -452,61 +447,77 @@ export default function HomePage() {
       const response = await fetch(`${API_BASE}/tasks`);
       if (!response.ok) throw new Error("历史任务加载失败");
       const remoteTasks = (await response.json()) as TaskSummary[];
-      if (remoteTasks.length > 0 || !DEMO_MODE) setTasks(remoteTasks);
+      setTasks(remoteTasks);
     } catch (cause) {
-      if (!DEMO_MODE) setError(cause instanceof Error ? cause.message : "历史任务加载失败");
+      setError(cause instanceof Error ? cause.message : "历史任务加载失败");
     }
   }, []);
 
+  const syncTaskSummary = useCallback((taskId: string, nextStatus: Status, message?: string) => {
+    setTasks((current) => current.map((task) => task.id === taskId ? { ...task, status: nextStatus, error_message: message ?? task.error_message } : task));
+  }, []);
+
   const loadResult = useCallback(async (taskId: string) => {
-    const response = await fetch(`${API_BASE}/tasks/${taskId}`); if (!response.ok) throw new Error("任务结果加载失败"); const data = (await response.json()) as TaskResult; setResult(data); applyStatus(data.status); if (data.error) setError(data.error); return data;
-  }, [applyStatus]);
+    const response = await fetch(`${API_BASE}/tasks/${taskId}`); if (!response.ok) throw new Error("任务结果加载失败"); const data = (await response.json()) as TaskResult; setResult(data); applyStatus(data.status); syncTaskSummary(taskId, data.status, data.error); if (data.error) setError(data.error); return data;
+  }, [applyStatus, syncTaskSummary]);
 
   const subscribe = useCallback((taskId: string, retry = 0) => {
+    if (activeTaskRef.current !== taskId) lastEventIdRef.current = "";
     closeStream(); activeTaskRef.current = taskId; setConnection(retry > 0 ? "reconnecting" : "live");
-    const stream = new EventSource(`${API_BASE}/stream/${taskId}`); eventSource.current = stream;
+    const replayQuery = retry > 0 && lastEventIdRef.current ? `?after_id=${encodeURIComponent(lastEventIdRef.current)}` : "";
+    const stream = new EventSource(`${API_BASE}/stream/${taskId}${replayQuery}`); eventSource.current = stream;
     const parse = (event: MessageEvent) => { try { return JSON.parse(event.data) as Record<string, unknown>; } catch { return {}; } };
-    stream.addEventListener("status", (event) => { const payload = parse(event as MessageEvent); if (typeof payload.status === "string") applyStatus(payload.status as Status); if (payload.error) setError(String(payload.error)); if (payload.status === "summary_finish" || payload.status === "error") { void loadResult(taskId); setConnection("idle"); stream.close(); } });
-     stream.addEventListener("agent", (event) => { const payload = parse(event as MessageEvent); const key = payload.agent as string; const text = formatAgentOutput(payload.output); if (!key) return; enqueueOutput(key, text); });
-    stream.addEventListener("warning", (event) => { const payload = parse(event as MessageEvent); if (payload.message) setError(String(payload.message)); });
+    const rememberEvent = (event: Event) => { const id = (event as MessageEvent).lastEventId; if (id) lastEventIdRef.current = id; };
+    stream.addEventListener("status", (event) => { rememberEvent(event); const payload = parse(event as MessageEvent); if (typeof payload.status === "string") { const nextStatus = payload.status as Status; applyStatus(nextStatus); syncTaskSummary(taskId, nextStatus, payload.error ? String(payload.error) : undefined); } if (payload.error) setError(String(payload.error)); if (payload.status === "summary_finish" || payload.status === "error") { void loadResult(taskId); setConnection("idle"); stream.close(); } });
+     stream.addEventListener("agent", (event) => { rememberEvent(event); const payload = parse(event as MessageEvent); const key = payload.agent as string; const text = formatAgentOutput(payload.output); if (!key) return; enqueueOutput(key, text); });
+    stream.addEventListener("warning", (event) => { rememberEvent(event); const payload = parse(event as MessageEvent); if (payload.message) setError(String(payload.message)); });
     stream.onerror = () => { stream.close(); if (activeTaskRef.current !== taskId) return; if (retry < 1) { setConnection("reconnecting"); setTimeout(() => subscribeRef.current(taskId, retry + 1), 1200); } else { setConnection("disconnected"); setError("实时连接已断开，请点击右上角刷新任务状态重试"); } };
-   }, [applyStatus, closeStream, enqueueOutput, loadResult]);
+   }, [applyStatus, closeStream, enqueueOutput, loadResult, syncTaskSummary]);
 
   useEffect(() => { subscribeRef.current = subscribe; }, [subscribe]);
   useEffect(() => { void loadTasks(); return closeStream; }, [closeStream, loadTasks]);
 
   const chooseTask = async (task: TaskSummary) => {
-    closeStream(); setSelected(task); setFile(null); resetPipeline();
-    if (task.id === DEMO_TASK.id) { setResult(DEMO_RESULT); setStatus("summary_finish"); setAgents(DEMO_AGENTS); return; }
+    closeStream(); setArchiveOpen(false); setSelected(task); setFile(null); resetPipeline();
     try { const loaded = await loadResult(task.id); if (loaded.status !== "summary_finish" && loaded.status !== "error") subscribe(task.id); } catch (cause) { setError(cause instanceof Error ? cause.message : "任务加载失败"); }
   };
-  const newAnalysis = () => { closeStream(); setSelected(null); setResult(undefined); setFile(null); setStatus("pending"); resetPipeline(); };
+  const newAnalysis = () => { closeStream(); setArchiveOpen(false); setSelected(null); setResult(undefined); setFile(null); setStatus("pending"); resetPipeline(); };
+  const openArchive = () => { closeStream(); setArchiveOpen(true); setError(""); setSidebarOpen(false); };
+  const openCurrent = () => { setArchiveOpen(false); setSidebarOpen(false); };
   const loadExample = async (report: OfficialReport) => {
     setExampleLoadingPath(report.localPath);
+    setBusy(true);
     setError("");
     const filename = `${report.company}_${report.period.replaceAll(" ", "_")}.pdf`;
-    // Show immediate feedback while the bundled PDF is read from the same-origin static file.
-    setFile(new File([], filename, { type: "application/pdf" }));
     try {
       const response = await fetch(report.localPath);
       if (!response.ok) throw new Error("示例文件加载失败，请重新启动前端服务");
       const blob = await response.blob();
-      setFile(new File([blob], filename, { type: "application/pdf" }));
+      const body = new FormData();
+      body.append("file", new File([blob], filename, { type: "application/pdf" }));
+      const taskResponse = await fetch(`${API_BASE}/tasks`, { method: "POST", body });
+      if (!taskResponse.ok) throw new Error((await taskResponse.text()) || "示例任务创建失败");
+      const created = (await taskResponse.json()) as { task_id: string; status: Status };
+      const task: TaskSummary = { id: created.task_id, filename, status: created.status, created_at: new Date().toISOString(), exampleId: report.id };
       closeStream();
-      setSelected(null);
-      setResult(undefined);
-      setStatus("pending");
       resetPipeline();
+      setTasks((current) => [task, ...current]);
+      setSelected(task);
+      setFile(null);
+      setResult(undefined);
+      setStatus(created.status);
+      subscribe(created.task_id);
       window.scrollTo({ top: 0, behavior: "smooth" });
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "示例文件加载失败");
     } finally {
       setExampleLoadingPath("");
+      setBusy(false);
     }
   };
-  const refresh = async () => { if (!selected) return; if (selected.id === DEMO_TASK.id) { setResult(DEMO_RESULT); setStatus("summary_finish"); setAgents(DEMO_AGENTS); return; } try { await loadResult(selected.id); setError(""); } catch (cause) { setError(cause instanceof Error ? cause.message : "任务刷新失败"); } };
+  const refresh = async () => { if (!selected) return; try { const loaded = await loadResult(selected.id); setError(""); if (loaded.status !== "summary_finish" && loaded.status !== "error") subscribe(selected.id); } catch (cause) { setError(cause instanceof Error ? cause.message : "任务刷新失败"); } };
   const upload = async () => { if (!file) return; setBusy(true); setError(""); const body = new FormData(); body.append("file", file); try { const response = await fetch(`${API_BASE}/tasks`, { method: "POST", body }); if (!response.ok) throw new Error((await response.text()) || "上传失败"); const created = (await response.json()) as { task_id: string; status: Status }; const task: TaskSummary = { id: created.task_id, filename: file.name, status: created.status, created_at: new Date().toISOString() }; setTasks((current) => [task, ...current]); setSelected(task); setResult(undefined); resetPipeline(); setStatus("pending"); subscribe(created.task_id); } catch (cause) { setError(cause instanceof Error ? cause.message : "上传失败"); } finally { setBusy(false); } };
 
   const headline = selected ? selected.filename : "从年报开始，建立你的研究判断";
-  return <main className="app-shell"><ResearchSidebar tasks={tasks} selectedId={selected?.id} open={sidebarOpen} onSelect={chooseTask} onNew={newAnalysis} onClose={() => setSidebarOpen(false)} /><div className="main-column"><header className="topbar no-print"><div className="topbar-inner"><button aria-label="打开历史任务" className="mobile-menu-button" onClick={() => setSidebarOpen(true)}><SidebarSimple size={20} /></button><div className="topbar-context"><div className="topbar-kicker"><span className="kicker-line" /> AI 财报多 Agent 投研分析平台 {DEMO_MODE && <span className="demo-badge">DEMO DATA</span>}</div><h1>{headline}</h1></div><div className="topbar-actions">{selected && <><StatusChip status={status} /><button aria-label="刷新任务" className="icon-button" onClick={() => void refresh()}><ArrowClockwise size={18} /></button></>}</div></div></header><div className="page-content">{error && <div className="error-banner no-print"><WarningCircle size={18} weight="fill" /><span>{error}</span><button aria-label="关闭错误提示" onClick={() => setError("")}><X size={15} /></button></div>}{!selected && <UploadPanel file={file} busy={busy} onFile={setFile} onUpload={upload} onClear={() => setFile(null)} />}{selected && <AgentPipeline currentStatus={status} agents={agents} />}{(!selected || selected.id === DEMO_TASK.id) && <OfficialReportsPanel onLoadExample={loadExample} loadingPath={exampleLoadingPath} />}<div className="stream-grid"><OutputStream outputs={outputs} connection={connection} /><Snapshot result={result} status={status} /></div><MetricCards report={result?.report_json} /><ChartsPanel report={result?.report_json} /><RiskInsights report={result?.report_json} /><ReportPreview result={result} /></div></div></main>;
+  return <main className="app-shell"><ResearchSidebar tasks={tasks} selectedId={selected?.id} archiveOpen={archiveOpen} open={sidebarOpen} onSelect={chooseTask} onNew={newAnalysis} onOpenArchive={openArchive} onOpenCurrent={openCurrent} onClose={() => setSidebarOpen(false)} /><div className="main-column"><header className="topbar no-print"><div className="topbar-inner"><button aria-label="打开历史任务" className="mobile-menu-button" onClick={() => setSidebarOpen(true)}><SidebarSimple size={20} /></button><div className="topbar-context"><div className="topbar-kicker"><span className="kicker-line" /> AI 财报多 Agent 投研分析平台</div><h1>{archiveOpen ? "统一管理你的研究判断" : headline}</h1></div><div className="topbar-actions">{selected && !archiveOpen && <><StatusChip status={status} /><button aria-label="刷新任务" className="icon-button" onClick={() => void refresh()}><ArrowClockwise size={18} /></button></>}</div></div></header><div className="page-content">{error && <div className="error-banner no-print"><WarningCircle size={18} weight="fill" /><span>{error}</span><button aria-label="关闭错误提示" onClick={() => setError("")}><X size={15} /></button></div>}{archiveOpen ? <ResearchArchive tasks={tasks} onSelect={chooseTask} onRefresh={() => void loadTasks()} /> : <>{!selected && <UploadPanel file={file} busy={busy} onFile={setFile} onUpload={upload} onClear={() => setFile(null)} />}{selected && <AgentPipeline currentStatus={status} agents={agents} />}{!selected && <OfficialReportsPanel onLoadExample={loadExample} loadingPath={exampleLoadingPath} />}<div className="stream-grid"><OutputStream outputs={outputs} connection={connection} /><Snapshot result={result} status={status} /></div><MetricCards report={result?.report_json} /><ChartsPanel report={result?.report_json} /><IndustryComparison report={result?.report_json} /><RiskInsights report={result?.report_json} /><ReportPreview result={result} /></>}</div></div></main>;
 }

@@ -21,6 +21,19 @@ create table if not exists public.analysis_reports (
 create index if not exists analysis_tasks_created_at_idx on public.analysis_tasks (created_at desc);
 create index if not exists analysis_tasks_status_idx on public.analysis_tasks (status);
 
+-- Durable SSE audit trail. Clients can replay rows after a network
+-- interruption by sending Last-Event-ID on the next connection.
+create table if not exists public.analysis_task_events (
+  id bigint generated always as identity primary key,
+  task_id uuid not null references public.analysis_tasks(id) on delete cascade,
+  event text not null,
+  payload jsonb not null,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists analysis_task_events_task_id_idx
+  on public.analysis_task_events(task_id, id);
+
 create table if not exists public.document_chunks (
   id bigint generated always as identity primary key,
   task_id uuid not null references public.analysis_tasks(id) on delete cascade,
@@ -54,3 +67,4 @@ $$;
 alter table public.analysis_tasks enable row level security;
 alter table public.analysis_reports enable row level security;
 alter table public.document_chunks enable row level security;
+alter table public.analysis_task_events enable row level security;
