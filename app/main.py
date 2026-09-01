@@ -876,13 +876,19 @@ async def run_graph(task_id: str, file_path: str) -> None:
         graph.add_edge("summary_agent", END)
         await graph.compile().ainvoke({"task_id": task_id, "file_path": file_path, "status": "pending"})
     except Exception as exc:
-        store.update_task(task_id, "error", str(exc))
+        try:
+            store.update_task(task_id, "error", str(exc))
+        except Exception as persist_exc:
+            print(f"Failed to persist task error for {task_id}: {persist_exc}")
         await emit(task_id, "status", {"status": "error", "error": str(exc)})
     finally:
         try:
             Path(file_path).unlink(missing_ok=True)
         except OSError:
             pass
+        # A completed task is replayed from Supabase when available. Do not
+        # retain up to 1000 in-memory messages for every historical task.
+        events.pop(task_id, None)
 
 
 async def resume_task(task: Dict[str, Any]) -> None:
@@ -908,7 +914,10 @@ async def resume_task(task: Dict[str, Any]) -> None:
         await run_graph(task_id, temp_path)
     except Exception as exc:
         assert store is not None
-        store.update_task(task_id, "error", str(exc))
+        try:
+            store.update_task(task_id, "error", str(exc))
+        except Exception as persist_exc:
+            print(f"Failed to persist recovery error for {task_id}: {persist_exc}")
         await emit(task_id, "status", {"status": "error", "error": str(exc)})
     finally:
         if temp_path and storage_path.startswith("supabase://"):
