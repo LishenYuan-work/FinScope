@@ -1395,7 +1395,10 @@ async def task_result(task_id: str, user: Optional[AuthUser] = Depends(current_u
         raise HTTPException(404, "任务不存在")
     except Exception as exc:
         print(f"Supabase result lookup failed for {task_id}: {exc}")
-        raise HTTPException(503, "任务结果服务暂时不可用，请稍后重试") from exc
+        raise HTTPException(
+            503,
+            "任务结果服务暂时不可用，请确认 Supabase 已执行完整 schema.sql（analysis_tasks、analysis_reports 表）后重试",
+        ) from exc
     return TaskResult(task_id=task_id, status=row["status"], report_markdown=row.get("report_markdown"), report_json=row.get("report_json"), error=row.get("error_message"))
 
 
@@ -1408,7 +1411,10 @@ async def list_tasks(limit: int = 50, user: Optional[AuthUser] = Depends(current
         rows = await asyncio.to_thread(store.list_tasks, min(max(limit, 1), 100)) if owner_id is None else await asyncio.to_thread(store.list_tasks, min(max(limit, 1), 100), owner_id)
     except Exception as exc:
         print(f"Supabase task list failed: {exc}")
-        raise HTTPException(503, "历史任务服务暂时不可用，请稍后重试") from exc
+        raise HTTPException(
+            503,
+            "历史任务服务暂时不可用，请确认 Supabase 已执行完整 schema.sql（analysis_tasks 表及 user_id 字段）后重试",
+        ) from exc
     return [TaskListItem.model_validate(item) for item in rows]
 
 
