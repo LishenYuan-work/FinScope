@@ -32,7 +32,7 @@ services:
       - key: SUPABASE_STORAGE_AUTO_CREATE
         value: "true"
       - key: CORS_ALLOW_ORIGINS
-        value: https://finscope-frontend-ug49.onrender.com
+        value: https://4-azure-delta.vercel.app,https://finscope-frontend-ug49.onrender.com
       - key: MAX_CONCURRENT_ANALYSES
         value: "1"
       - key: MODEL_REQUEST_TIMEOUT_SECONDS
