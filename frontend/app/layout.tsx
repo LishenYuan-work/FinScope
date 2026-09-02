@@ -14,11 +14,14 @@ export const metadata: Metadata = {
   applicationName: "FinScope Research Console",
 }; 
 
+// Render writes this file at container startup; Vercel uses the build-time API env instead.
+const useRuntimeConfig = !process.env.VERCEL;
+
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
     <html lang="zh-CN">
       <body>
-        <Script src="/runtime-config.js" strategy="beforeInteractive" />
+        {useRuntimeConfig ? <Script src="/runtime-config.js" strategy="beforeInteractive" /> : null}
         {children}
       </body>
     </html>
