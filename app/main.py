@@ -933,7 +933,11 @@ app = FastAPI(title="AI财报多Agent投研分析平台", version="0.1.0")
 # origin as a deployment-safe fallback. This prevents a stale Render env var
 # from breaking browser sign-in after a frontend domain migration.
 configured_origins = [origin.strip() for origin in os.getenv("CORS_ALLOW_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000").split(",") if origin.strip()]
-allowed_origins = list(dict.fromkeys([*configured_origins, "https://4-azure-delta.vercel.app"]))
+allowed_origins = list(dict.fromkeys([
+    *configured_origins,
+    "https://4-azure-delta.vercel.app",
+    "https://4-0-1cd0.vercel.app",
+]))
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,
