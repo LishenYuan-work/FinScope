@@ -54,6 +54,17 @@ function apiBaseUrl() {
   }
   return API_BASE;
 }
+
+async function responseError(response: Response, fallback: string): Promise<Error> {
+  let detail = "";
+  try {
+    const payload = (await response.clone().json()) as { detail?: unknown; message?: unknown; error?: unknown };
+    detail = [payload.detail, payload.message, payload.error].find((value) => typeof value === "string" && value.trim()) as string || "";
+  } catch {
+    try { detail = (await response.text()).trim(); } catch { /* keep fallback */ }
+  }
+  return new Error(detail || `${fallback}（HTTP ${response.status}）`);
+}
 type Status = "pending" | "parsing" | "finance_analyzing" | "risk_analyzing" | "summary_finish" | "error";
 type AgentKey = "document_parser" | "finance_analyst" | "risk_reviewer" | "industry_summary";
 type ConnectionState = "idle" | "live" | "reconnecting" | "disconnected";
@@ -465,7 +476,7 @@ export default function HomePage() {
   const loadTasks = useCallback(async () => {
     try {
       const response = await authFetch(`${apiBaseUrl()}/tasks`);
-      if (!response.ok) throw new Error("历史任务加载失败");
+      if (!response.ok) throw await responseError(response, "历史任务加载失败");
       const remoteTasks = (await response.json()) as TaskSummary[];
       setTasks(remoteTasks);
     } catch (cause) {
@@ -478,7 +489,7 @@ export default function HomePage() {
   }, []);
 
   const loadResult = useCallback(async (taskId: string) => {
-    const response = await authFetch(`${apiBaseUrl()}/tasks/${taskId}`); if (!response.ok) throw new Error("任务结果加载失败"); const data = (await response.json()) as TaskResult; setResult(data); applyStatus(data.status); syncTaskSummary(taskId, data.status, data.error); if (data.error) setError(data.error); return data;
+    const response = await authFetch(`${apiBaseUrl()}/tasks/${taskId}`); if (!response.ok) throw await responseError(response, "任务结果加载失败"); const data = (await response.json()) as TaskResult; setResult(data); applyStatus(data.status); syncTaskSummary(taskId, data.status, data.error); if (data.error) setError(data.error); return data;
   }, [applyStatus, syncTaskSummary]);
 
   const subscribe = useCallback((taskId: string, retry = 0) => {
