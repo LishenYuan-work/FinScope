@@ -119,21 +119,60 @@ class PDFParseTool(BaseTool):
     def _run(self, file_path: str) -> Dict[str, Any]:
         try:
             import pdfplumber
+
+            # Table extraction is considerably more memory intensive than text
+            # extraction.  On small Render instances, scanning every page of a
+            # 300+ page annual report can exceed the 512 MB limit.  We still
+            # cover the financial statement pages by looking for table-related
+            # terms and limiting the number of expensive scans.
+            table_scan_limit = _env_int("PDF_TABLE_SCAN_LIMIT", 96, 0, 512)
+            table_terms = re.compile(
+                r"(?:financial statements?|income statement|balance sheet|"
+                r"cash flow|revenue|gross profit|资产负债|利润表|现金流|财务报表|毛利率)",
+                flags=re.IGNORECASE,
+            )
             with pdfplumber.open(file_path) as pdf:
-                pages, tables, chunks = [], [], []
+                tables, chunks = [], []
+                page_count = 0
+                scanned_table_pages = 0
                 for page_number, page in enumerate(pdf.pages, start=1):
-                    page_text = page.extract_text() or ""
-                    pages.append(page_text)
-                    for index in range(0, len(page_text), 1800):
-                        chunk_text = page_text[index : index + 1800].strip()
-                        if chunk_text:
-                            chunks.append({"chunk_id": f"p{page_number}-c{index // 1800 + 1}", "page": page_number, "text": chunk_text})
-                    for table in page.extract_tables() or []:
-                        tables.append({"page": page_number, "rows": table})
-            text = "\n\n".join(pages).strip()
+                    page_count = page_number
+                    try:
+                        page_text = page.extract_text() or ""
+                        for index in range(0, len(page_text), 1800):
+                            chunk_text = page_text[index : index + 1800].strip()
+                            if chunk_text:
+                                chunks.append(
+                                    {
+                                        "chunk_id": f"p{page_number}-c{index // 1800 + 1}",
+                                        "page": page_number,
+                                        "text": chunk_text,
+                                    }
+                                )
+
+                        should_scan_table = (
+                            scanned_table_pages < table_scan_limit
+                            and bool(table_terms.search(page_text))
+                        )
+                        if should_scan_table:
+                            scanned_table_pages += 1
+                            for table in page.extract_tables() or []:
+                                # Avoid retaining empty/noisy table shells.
+                                if any(cell for row in table for cell in (row or [])):
+                                    tables.append({"page": page_number, "rows": table})
+                    finally:
+                        # pdfplumber caches page geometry and table objects;
+                        # closing each page keeps peak memory bounded.
+                        close_page = getattr(page, "close", None)
+                        if callable(close_page):
+                            close_page()
+            # The graph uses page chunks for RAG and does not need a second
+            # copy of the complete report text.  Keep a compact compatibility
+            # field assembled only after page processing has finished.
+            text = "\n\n".join(chunk["text"] for chunk in chunks).strip()
             if not text and not tables:
                 raise ValueError("PDF未提取到文本或表格")
-            return {"text": text, "tables": tables, "chunks": chunks, "page_count": len(pages)}
+            return {"text": text, "tables": tables, "chunks": chunks, "page_count": page_count}
         except Exception as exc:  # wrapped so graph can persist an error state
             raise RuntimeError(f"PDF解析失败: {exc}") from exc
 
