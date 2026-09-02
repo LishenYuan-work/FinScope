@@ -13,9 +13,9 @@ export const metadata: Metadata = {
   description: "将上市公司年报转化为可溯源的财务研究判断",
   applicationName: "FinScope Research Console",
   icons: {
-    icon: "/finscope-mark.png",
-    shortcut: "/finscope-mark.png",
-    apple: "/finscope-mark.png",
+    icon: "/icon.png",
+    shortcut: "/icon.png",
+    apple: "/icon.png",
   },
 };
 
