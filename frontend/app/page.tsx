@@ -46,7 +46,7 @@ declare global {
   }
 }
 
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
+const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? (process.env.VERCEL ? "https://finscope-backend-637y.onrender.com" : "http://localhost:8000");
 
 function apiBaseUrl() {
   if (typeof window !== "undefined") {
