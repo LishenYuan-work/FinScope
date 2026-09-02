@@ -19,6 +19,7 @@ import {
   Pulse,
   SealCheck,
   SidebarSimple,
+  SignIn,
   SignOut,
   Sparkle,
   WarningCircle,
@@ -267,17 +268,17 @@ function ConnectionBadge({ state }: { state: ConnectionState }) {
   return <span className={`connection-badge ${config[state].className}`}><span className="connection-dot" />{config[state].label}</span>;
 }
 
-function ResearchSidebar({ tasks, selectedId, archiveOpen, open, onSelect, onNew, onOpenArchive, onOpenCurrent, onClose, onLogout }: { tasks: TaskSummary[]; selectedId?: string; archiveOpen: boolean; open: boolean; onSelect: (task: TaskSummary) => void; onNew: () => void; onOpenArchive: () => void; onOpenCurrent: () => void; onClose: () => void; onLogout: () => void }) {
+function ResearchSidebar({ tasks, selectedId, archiveOpen, open, readOnly, onSelect, onNew, onOpenArchive, onOpenCurrent, onClose, onLogout, onLogin }: { tasks: TaskSummary[]; selectedId?: string; archiveOpen: boolean; open: boolean; readOnly: boolean; onSelect: (task: TaskSummary) => void; onNew: () => void; onOpenArchive: () => void; onOpenCurrent: () => void; onClose: () => void; onLogout: () => void; onLogin: () => void }) {
   return <>
     {open && <button aria-label="关闭历史任务栏" className="sidebar-overlay no-print" onClick={onClose} />}
     <aside className={`research-sidebar no-print ${open ? "is-open" : ""}`}>
       <div className="sidebar-head"><div className="brand-lockup"><div className="brand-mark"><ChartLineUp size={18} weight="bold" /></div><div><div className="brand-name">FinScope</div><div className="brand-caption">AI research studio</div></div></div><button aria-label="关闭侧边栏" className="sidebar-close" onClick={onClose}><X size={17} /></button></div>
-      <button className="new-analysis-button" onClick={onNew}><Sparkle size={17} weight="fill" /> 新建分析 <span className="shortcut"><Command size={12} /> K</span></button>
+      <button className={`new-analysis-button ${readOnly ? "is-locked" : ""}`} onClick={readOnly ? onLogin : onNew}><Sparkle size={17} weight="fill" /> {readOnly ? "登录后开始分析" : "新建分析"} {!readOnly && <span className="shortcut"><Command size={12} /> K</span>}</button>
       <div className="sidebar-section-label">工作台</div>
-      <div className="sidebar-nav"><button className={`sidebar-nav-item ${!archiveOpen ? "is-active" : ""}`} onClick={onOpenCurrent}><ListChecks size={17} />当前分析<span className="nav-count">{selectedId ? "1" : "0"}</span></button><button className={`sidebar-nav-item ${archiveOpen ? "is-active" : ""}`} onClick={onOpenArchive}><BookOpenText size={17} />研究档案<span className="nav-count">{tasks.length}</span></button></div>
+      <div className="sidebar-nav"><button className={`sidebar-nav-item ${!archiveOpen ? "is-active" : ""}`} onClick={readOnly ? onLogin : onOpenCurrent}><ListChecks size={17} />当前分析<span className="nav-count">{selectedId ? "1" : "0"}</span></button><button className={`sidebar-nav-item ${archiveOpen ? "is-active" : ""} ${readOnly ? "is-locked" : ""}`} onClick={readOnly ? onLogin : onOpenArchive}><BookOpenText size={17} />研究档案<span className="nav-count">{readOnly ? "—" : tasks.length}</span></button></div>
       <div className="sidebar-section-label history-label">历史任务</div>
-      <div className="task-list">{tasks.length === 0 ? <div className="sidebar-empty"><FileText size={18} /><span>上传第一份年报，历史分析会显示在这里。</span></div> : tasks.map((task) => <button key={task.id} onClick={() => { onSelect(task); onClose(); }} className={`task-item ${task.id === selectedId ? "is-selected" : ""}`}><div className="task-item-top"><FileText size={16} /><span>{task.filename}</span><CaretRight size={14} className="task-arrow" /></div><div className="task-item-meta"><span>{formatDate(task.created_at)}</span><StatusChip status={task.status} /></div></button>)}</div>
-      <div className="sidebar-footer"><div className="secure-line"><SealCheck size={15} weight="fill" />数据仅在已配置后端处理</div><button className="logout-button" onClick={onLogout}><SignOut size={15} />退出登录</button><div className="sidebar-version">FinScope Console · 01</div></div>
+      <div className="task-list">{tasks.length === 0 ? <div className="sidebar-empty"><FileText size={18} /><span>{readOnly ? "登录后查看你的历史任务。" : "上传第一份年报，历史分析会显示在这里。"}</span></div> : tasks.map((task) => <button key={task.id} onClick={() => { onSelect(task); onClose(); }} className={`task-item ${task.id === selectedId ? "is-selected" : ""}`}><div className="task-item-top"><FileText size={16} /><span>{task.filename}</span><CaretRight size={14} className="task-arrow" /></div><div className="task-item-meta"><span>{formatDate(task.created_at)}</span><StatusChip status={task.status} /></div></button>)}</div>
+      <div className="sidebar-footer"><div className="secure-line"><SealCheck size={15} weight="fill" />数据仅在已配置后端处理</div>{readOnly ? <button className="logout-button login-sidebar-button" onClick={onLogin}><SignIn size={15} />登录工作台</button> : <button className="logout-button" onClick={onLogout}><SignOut size={15} />退出登录</button>}<div className="sidebar-version">FinScope Console · 01</div></div>
     </aside>
   </>;
 }
@@ -305,18 +306,18 @@ function ResearchArchive({ tasks, onSelect, onRefresh }: { tasks: TaskSummary[];
   </section>;
 }
 
-function UploadPanel({ file, busy, onFile, onUpload, onClear }: { file: File | null; busy: boolean; onFile: (file: File) => void; onUpload: () => void; onClear: () => void }) {
+function UploadPanel({ file, busy, readOnly, onFile, onUpload, onClear, onRequireLogin }: { file: File | null; busy: boolean; readOnly: boolean; onFile: (file: File) => void; onUpload: () => void; onClear: () => void; onRequireLogin: () => void }) {
   const [dragging, setDragging] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const accept = (candidate?: File) => { if (candidate && (candidate.type === "application/pdf" || candidate.name.toLowerCase().endsWith(".pdf"))) onFile(candidate); };
-  return <section className={`upload-panel ${dragging ? "is-dragging" : ""}`} onDragOver={(event) => { event.preventDefault(); setDragging(true); }} onDragLeave={() => setDragging(false)} onDrop={(event) => { event.preventDefault(); setDragging(false); accept(event.dataTransfer.files[0]); }}>
+  return <section className={`upload-panel ${dragging ? "is-dragging" : ""} ${readOnly ? "is-readonly" : ""}`} onDragOver={(event) => { event.preventDefault(); if (!readOnly) setDragging(true); }} onDragLeave={() => setDragging(false)} onDrop={(event) => { event.preventDefault(); setDragging(false); if (!readOnly) accept(event.dataTransfer.files[0]); }}>
     <div className="upload-panel-top"><div><div className="eyebrow"><CloudArrowUp size={14} weight="bold" /> DOCUMENT INTAKE</div><h2>把一份年报，变成一份研究判断。</h2><p>上传上市公司 PDF 年报，四个专职 Agent 将提取指标、识别风险并生成可溯源投研报告。</p></div><div className="upload-stat"><span className="stat-number">01</span><span className="stat-label">single PDF<br />per analysis</span></div></div>
-    <div className="upload-dropzone" role="button" tabIndex={0} onKeyDown={(event) => { if ((event.key === "Enter" || event.key === " ") && !file) { event.preventDefault(); inputRef.current?.click(); } }} onClick={() => !file && inputRef.current?.click()}><input ref={inputRef} type="file" accept="application/pdf,.pdf" className="hidden-input" onChange={(event) => accept(event.target.files?.[0])} />{file ? <div className="selected-file"><div className="file-symbol"><FileText size={23} weight="bold" /></div><div className="selected-file-info"><strong>{file.name}</strong><span>{(file.size / 1024 / 1024).toFixed(2)} MB · PDF document</span></div><button aria-label="移除文件" className="clear-file" onClick={(event) => { event.stopPropagation(); onClear(); }}><X size={18} /></button></div> : <div className="dropzone-empty"><div className="upload-orbit"><CloudArrowUp size={25} weight="light" /></div><div><strong>拖拽年报至此</strong><span>或点击从本地选择 PDF</span></div><div className="dropzone-hint">最大 50 MB · 仅处理用户上传文件</div></div>}</div>
-    <div className="upload-panel-bottom"><div className="privacy-note"><SealCheck size={15} weight="fill" /> 上传内容通过已配置的 FastAPI 接口处理</div>{file && <button disabled={busy} className="gradient-button" onClick={onUpload}>{busy ? <CircleNotch size={17} className="spin" /> : <ArrowUpRight size={17} />} {busy ? "创建任务中" : "开始分析"}</button>}</div>
+    <div className="upload-dropzone" role="button" tabIndex={readOnly ? -1 : 0} aria-disabled={readOnly} onKeyDown={(event) => { if ((event.key === "Enter" || event.key === " ") && !file) { event.preventDefault(); if (readOnly) onRequireLogin(); else inputRef.current?.click(); } }} onClick={() => { if (readOnly) onRequireLogin(); else if (!file) inputRef.current?.click(); }}><input ref={inputRef} disabled={readOnly} type="file" accept="application/pdf,.pdf" className="hidden-input" onChange={(event) => accept(event.target.files?.[0])} />{file ? <div className="selected-file"><div className="file-symbol"><FileText size={23} weight="bold" /></div><div className="selected-file-info"><strong>{file.name}</strong><span>{(file.size / 1024 / 1024).toFixed(2)} MB · PDF document</span></div><button aria-label="移除文件" className="clear-file" onClick={(event) => { event.stopPropagation(); onClear(); }}><X size={18} /></button></div> : <div className="dropzone-empty"><div className="upload-orbit"><CloudArrowUp size={25} weight="light" /></div><div><strong>{readOnly ? "登录后上传年报" : "拖拽年报至此"}</strong><span>{readOnly ? "当前为只读预览模式" : "或点击从本地选择 PDF"}</span></div><div className="dropzone-hint">最大 50 MB · 仅处理用户上传文件</div></div>}</div>
+    <div className="upload-panel-bottom"><div className="privacy-note"><SealCheck size={15} weight="fill" /> {readOnly ? "登录后即可创建分析任务" : "上传内容通过已配置的 FastAPI 接口处理"}</div>{file && !readOnly && <button disabled={busy} className="gradient-button" onClick={onUpload}>{busy ? <CircleNotch size={17} className="spin" /> : <ArrowUpRight size={17} />} {busy ? "创建任务中" : "开始分析"}</button>}</div>
   </section>;
 }
 
-function OfficialReportsPanel({ onLoadExample, loadingPath }: { onLoadExample: (report: OfficialReport) => void; loadingPath: string }) {
+function OfficialReportsPanel({ onLoadExample, loadingPath, readOnly, onRequireLogin }: { onLoadExample: (report: OfficialReport) => void; loadingPath: string; readOnly: boolean; onRequireLogin: () => void }) {
   return <section className="official-reports-panel no-print" aria-labelledby="official-reports-title">
     <div className="section-heading official-reports-heading">
       <div>
@@ -334,7 +335,7 @@ function OfficialReportsPanel({ onLoadExample, loadingPath }: { onLoadExample: (
         <div className="official-report-period">{report.period}</div>
         <p>{report.description}</p>
         <div className="official-report-actions">
-          <button type="button" onClick={() => { if (loadingPath !== report.localPath) onLoadExample(report); }} className="official-report-link" aria-label={`开始${report.company}真实分析`}>{loadingPath === report.localPath ? <CircleNotch size={15} className="spin" /> : <FileText size={15} />} {loadingPath === report.localPath ? "创建任务中" : "开始真实分析"} <ArrowUpRight size={14} /></button>
+          <button type="button" onClick={() => { if (readOnly) onRequireLogin(); else if (loadingPath !== report.localPath) onLoadExample(report); }} className={`official-report-link ${readOnly ? "is-locked" : ""}`} aria-label={readOnly ? "登录后开始分析" : `开始${report.company}真实分析`}>{loadingPath === report.localPath ? <CircleNotch size={15} className="spin" /> : readOnly ? <SignIn size={15} /> : <FileText size={15} />} {loadingPath === report.localPath ? "创建任务中" : readOnly ? "登录后开始分析" : "开始真实分析"} <ArrowUpRight size={14} /></button>
           <a href={report.reportUrl} target="_blank" rel="noreferrer" className="official-source-link">官方原件</a>
           <a href={report.sourceUrl} target="_blank" rel="noreferrer" className="official-source-link">来源页</a>
         </div>
@@ -394,6 +395,7 @@ function ReportPreview({ result }: { result?: TaskResult }) {
 
 export default function HomePage() {
   const [authReady, setAuthReady] = useState(false);
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [tasks, setTasks] = useState<TaskSummary[]>([]);
   const [selected, setSelected] = useState<TaskSummary | null>(null);
   const [file, setFile] = useState<File | null>(null);
@@ -499,13 +501,15 @@ export default function HomePage() {
   useEffect(() => { subscribeRef.current = subscribe; }, [subscribe]);
 
   const chooseTask = async (task: TaskSummary) => {
+    if (!isAuthenticated) { window.location.assign("/login"); return; }
     closeStream(); setArchiveOpen(false); setSelected(task); setFile(null); resetPipeline();
     try { const loaded = await loadResult(task.id); if (loaded.status !== "summary_finish" && loaded.status !== "error") subscribe(task.id); } catch (cause) { setError(cause instanceof Error ? cause.message : "任务加载失败"); }
   };
-  const newAnalysis = () => { closeStream(); setArchiveOpen(false); setSelected(null); setResult(undefined); setFile(null); setStatus("pending"); resetPipeline(); };
-  const openArchive = () => { closeStream(); setArchiveOpen(true); setError(""); setSidebarOpen(false); };
+  const newAnalysis = () => { if (!isAuthenticated) { window.location.assign("/login"); return; } closeStream(); setArchiveOpen(false); setSelected(null); setResult(undefined); setFile(null); setStatus("pending"); resetPipeline(); };
+  const openArchive = () => { if (!isAuthenticated) { window.location.assign("/login"); return; } closeStream(); setArchiveOpen(true); setError(""); setSidebarOpen(false); };
   const openCurrent = () => { setArchiveOpen(false); setSidebarOpen(false); };
   const loadExample = async (report: OfficialReport) => {
+    if (!isAuthenticated) { window.location.assign("/login"); return; }
     setExampleLoadingPath(report.localPath);
     setBusy(true);
     setError("");
@@ -536,19 +540,16 @@ export default function HomePage() {
       setBusy(false);
     }
   };
-  const refresh = async () => { if (!selected) return; try { const loaded = await loadResult(selected.id); setError(""); if (loaded.status !== "summary_finish" && loaded.status !== "error") subscribe(selected.id); } catch (cause) { setError(cause instanceof Error ? cause.message : "任务刷新失败"); } };
-  const upload = async () => { if (!file) return; setBusy(true); setError(""); const body = new FormData(); body.append("file", file); try { const response = await authFetch(`${apiBaseUrl()}/tasks`, { method: "POST", body }); if (!response.ok) throw new Error((await response.text()) || "上传失败"); const created = (await response.json()) as { task_id: string; status: Status }; const task: TaskSummary = { id: created.task_id, filename: file.name, status: created.status, created_at: new Date().toISOString() }; setTasks((current) => [task, ...current]); setSelected(task); setResult(undefined); resetPipeline(); setStatus("pending"); subscribe(created.task_id); } catch (cause) { setError(cause instanceof Error ? cause.message : "上传失败"); } finally { setBusy(false); } };
+  const refresh = async () => { if (!isAuthenticated) { window.location.assign("/login"); return; } if (!selected) return; try { const loaded = await loadResult(selected.id); setError(""); if (loaded.status !== "summary_finish" && loaded.status !== "error") subscribe(selected.id); } catch (cause) { setError(cause instanceof Error ? cause.message : "任务刷新失败"); } };
+  const upload = async () => { if (!isAuthenticated) { window.location.assign("/login"); return; } if (!file) return; setBusy(true); setError(""); const body = new FormData(); body.append("file", file); try { const response = await authFetch(`${apiBaseUrl()}/tasks`, { method: "POST", body }); if (!response.ok) throw new Error((await response.text()) || "上传失败"); const created = (await response.json()) as { task_id: string; status: Status }; const task: TaskSummary = { id: created.task_id, filename: file.name, status: created.status, created_at: new Date().toISOString() }; setTasks((current) => [task, ...current]); setSelected(task); setResult(undefined); resetPipeline(); setStatus("pending"); subscribe(created.task_id); } catch (cause) { setError(cause instanceof Error ? cause.message : "上传失败"); } finally { setBusy(false); } };
 
   useEffect(() => {
-    if (!getAccessToken()) {
-      window.location.assign("/login");
-      return;
-    }
+    setIsAuthenticated(Boolean(getAccessToken()));
     setAuthReady(true);
   }, []);
   const headline = selected ? selected.filename : "从年报开始，建立你的研究判断";
-  useEffect(() => { if (authReady) void loadTasks(); return closeStream; }, [authReady, closeStream, loadTasks]);
+  useEffect(() => { if (authReady && isAuthenticated) void loadTasks(); return closeStream; }, [authReady, isAuthenticated, closeStream, loadTasks]);
   if (!authReady) return <main className="auth-loading"><div className="auth-loading-dot" />正在验证登录状态…</main>;
   const logout = () => { closeStream(); clearAccessToken(); window.location.assign("/login"); };
-  return <main className="app-shell"><ResearchSidebar tasks={tasks} selectedId={selected?.id} archiveOpen={archiveOpen} open={sidebarOpen} onSelect={chooseTask} onNew={newAnalysis} onOpenArchive={openArchive} onOpenCurrent={openCurrent} onClose={() => setSidebarOpen(false)} onLogout={logout} /><div className="main-column"><header className="topbar no-print"><div className="topbar-inner"><button aria-label="打开历史任务" className="mobile-menu-button" onClick={() => setSidebarOpen(true)}><SidebarSimple size={20} /></button><div className="topbar-context"><div className="topbar-kicker"><span className="kicker-line" /> AI 财报多 Agent 投研分析平台</div><h1>{archiveOpen ? "统一管理你的研究判断" : headline}</h1></div><div className="topbar-actions">{selected && !archiveOpen && <><StatusChip status={status} /><button aria-label="刷新任务" className="icon-button" onClick={() => void refresh()}><ArrowClockwise size={18} /></button></>}</div></div></header><div className="page-content">{error && <div className="error-banner no-print"><WarningCircle size={18} weight="fill" /><span>{error}</span><button aria-label="关闭错误提示" onClick={() => setError("")}><X size={15} /></button></div>}{archiveOpen ? <ResearchArchive tasks={tasks} onSelect={chooseTask} onRefresh={() => void loadTasks()} /> : <>{!selected && <UploadPanel file={file} busy={busy} onFile={setFile} onUpload={upload} onClear={() => setFile(null)} />}{selected && <AgentPipeline currentStatus={status} agents={agents} />}{!selected && <OfficialReportsPanel onLoadExample={loadExample} loadingPath={exampleLoadingPath} />}<div className="stream-grid"><OutputStream outputs={outputs} connection={connection} /><Snapshot result={result} status={status} /></div><MetricCards report={result?.report_json} /><ChartsPanel report={result?.report_json} /><IndustryComparison report={result?.report_json} /><RiskInsights report={result?.report_json} /><ReportPreview result={result} /></>}</div></div></main>;
+  return <main className="app-shell"><ResearchSidebar tasks={tasks} selectedId={selected?.id} archiveOpen={archiveOpen} open={sidebarOpen} readOnly={!isAuthenticated} onSelect={chooseTask} onNew={newAnalysis} onOpenArchive={openArchive} onOpenCurrent={openCurrent} onClose={() => setSidebarOpen(false)} onLogout={logout} onLogin={() => window.location.assign("/login")} /><div className="main-column"><header className="topbar no-print"><div className="topbar-inner"><button aria-label="打开历史任务" className="mobile-menu-button" onClick={() => setSidebarOpen(true)}><SidebarSimple size={20} /></button><div className="topbar-context"><div className="topbar-kicker"><span className="kicker-line" /> AI 财报多 Agent 投研分析平台</div><h1>{archiveOpen ? "统一管理你的研究判断" : headline}</h1></div><div className="topbar-actions">{isAuthenticated ? selected && !archiveOpen && <><StatusChip status={status} /><button aria-label="刷新任务" className="icon-button" onClick={() => void refresh()}><ArrowClockwise size={18} /></button></> : <button className="topbar-login-button" onClick={() => window.location.assign("/login")}><SignIn size={16} />登录 / 注册</button>}</div></div></header><div className="page-content">{!isAuthenticated && <div className="readonly-banner no-print"><SealCheck size={17} weight="fill" /><div><strong>只读预览模式</strong><span>登录后才能上传年报、运行 Agent 和保存研究档案。</span></div><button onClick={() => window.location.assign("/login")}><SignIn size={15} />登录</button></div>}{error && <div className="error-banner no-print"><WarningCircle size={18} weight="fill" /><span>{error}</span><button aria-label="关闭错误提示" onClick={() => setError("")}><X size={15} /></button></div>}{archiveOpen ? <ResearchArchive tasks={tasks} onSelect={chooseTask} onRefresh={() => void loadTasks()} /> : <>{!selected && <UploadPanel file={file} busy={busy} readOnly={!isAuthenticated} onFile={setFile} onUpload={upload} onClear={() => setFile(null)} onRequireLogin={() => window.location.assign("/login")} />}{selected && <AgentPipeline currentStatus={status} agents={agents} />}{!selected && <OfficialReportsPanel onLoadExample={loadExample} loadingPath={exampleLoadingPath} readOnly={!isAuthenticated} onRequireLogin={() => window.location.assign("/login")} />}<div className="stream-grid"><OutputStream outputs={outputs} connection={connection} /><Snapshot result={result} status={status} /></div><MetricCards report={result?.report_json} /><ChartsPanel report={result?.report_json} /><IndustryComparison report={result?.report_json} /><RiskInsights report={result?.report_json} /><ReportPreview result={result} /></>}</div></div></main>;
 }
