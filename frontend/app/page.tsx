@@ -475,7 +475,13 @@ export default function HomePage() {
 
   const loadTasks = useCallback(async () => {
     try {
-      const response = await authFetch(`${apiBaseUrl()}/tasks`);
+      let response = await authFetch(`${apiBaseUrl()}/tasks`);
+      // Render free instances can briefly return 5xx while waking up. Retry
+      // once so a transient cold-start does not look like a data failure.
+      if (response.status >= 500 && response.status < 600) {
+        await new Promise((resolve) => window.setTimeout(resolve, 1200));
+        response = await authFetch(`${apiBaseUrl()}/tasks`);
+      }
       if (!response.ok) throw await responseError(response, "历史任务加载失败");
       const remoteTasks = (await response.json()) as TaskSummary[];
       setTasks(remoteTasks);
