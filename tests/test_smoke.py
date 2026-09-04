@@ -2,8 +2,10 @@ import asyncio
 import os
 import unittest
 
+from fastapi.security import HTTPAuthorizationCredentials
+
 from app import main as backend
-from app.main import AgentState, JsonReportParser, ReportAgents, SupabaseStore, _env_seconds, format_sse, read_pdf_upload
+from app.main import AgentState, GuestStore, JsonReportParser, ReportAgents, SupabaseStore, _env_seconds, format_sse, read_pdf_upload
 from langgraph.graph import END, START, StateGraph
 
 
@@ -232,6 +234,68 @@ class DeploymentSmokeTests(unittest.TestCase):
         graph.add_edge("risk_agent", "summary_agent")
         graph.add_edge("summary_agent", END)
         graph.compile()
+
+    def test_guest_token_is_ephemeral_and_hidden_from_history(self):
+        response = asyncio.run(backend.guest_login())
+        self.assertTrue(response.access_token.startswith("guest_"))
+        user = asyncio.run(
+            backend.current_user(
+                HTTPAuthorizationCredentials(scheme="Bearer", credentials=response.access_token),
+                None,
+            )
+        )
+        self.assertTrue(user.is_guest)
+        self.assertEqual(asyncio.run(backend.list_tasks(user=user)), [])
+
+    def test_guest_store_keeps_task_data_outside_supabase(self):
+        guest = GuestStore()
+        task_id = guest.create_task("demo.pdf", "pending://demo", "guest:user")
+        guest.update_task(task_id, "summary_finish")
+        guest.save_report(task_id, "# 报告", {"summary": "仅本次会话可见"})
+        current = guest.get_task(task_id, "guest:user")
+        self.assertEqual(current["status"], "summary_finish")
+        self.assertEqual(current["report_markdown"], "# 报告")
+        with self.assertRaises(KeyError):
+            guest.get_task(task_id, "guest:other")
+
+    def test_guest_store_ranks_vectors_without_persisting_embeddings(self):
+        guest = GuestStore()
+        task_id = guest.create_task("demo.pdf", "pending://demo", "guest:user")
+        chunks = [
+            {"chunk_id": "p1-c1", "page": 1, "text": "现金流"},
+            {"chunk_id": "p9-c1", "page": 9, "text": "营业收入"},
+        ]
+        guest.save_chunks(task_id, chunks, [[1.0, 0.0], [0.0, 1.0]])
+        matches = guest.search_chunks(task_id, [0.0, 1.0], limit=1)
+        self.assertEqual(matches[0]["chunk_id"], "p9-c1")
+        self.assertNotIn("embedding", matches[0])
+
+    def test_expired_guest_session_purges_ephemeral_tasks(self):
+        guest = GuestStore()
+        task_id = guest.create_task("demo.pdf", "pending://demo", "guest:expired")
+        guest.save_report(task_id, "# 报告", {})
+        original_store = backend.guest_store
+        original_sessions = backend.guest_sessions.copy()
+        try:
+            backend.guest_store = guest
+            backend.guest_sessions["guest_expired_test"] = {
+                "user_id": "guest:expired",
+                "expires_at": 0,
+            }
+            with self.assertRaises(Exception) as expired:
+                asyncio.run(
+                    backend.current_user(
+                        HTTPAuthorizationCredentials(scheme="Bearer", credentials="guest_expired_test"),
+                        None,
+                    )
+                )
+            self.assertEqual(expired.exception.status_code, 401)
+            with self.assertRaises(KeyError):
+                guest.get_task(task_id, "guest:expired")
+        finally:
+            backend.guest_store = original_store
+            backend.guest_sessions.clear()
+            backend.guest_sessions.update(original_sessions)
 
 
 if __name__ == "__main__":

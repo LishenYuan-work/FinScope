@@ -5,6 +5,10 @@ export function getAccessToken(): string {
   return window.localStorage.getItem(ACCESS_TOKEN_KEY) ?? "";
 }
 
+export function isGuestToken(token = getAccessToken()): boolean {
+  return token.startsWith("guest_");
+}
+
 export function saveAccessToken(token: string) {
   window.localStorage.setItem(ACCESS_TOKEN_KEY, token);
 }

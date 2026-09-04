@@ -1,6 +1,6 @@
 "use client";
 
-import { ArrowRight, Eye, EyeSlash, LockKey, UserCircle } from "@phosphor-icons/react";
+import { ArrowRight, Eye, EyeSlash, Flask, LockKey, UserCircle } from "@phosphor-icons/react";
 import { FormEvent, useState } from "react";
 import { saveAccessToken } from "../../lib/auth";
 
@@ -59,6 +59,23 @@ export default function LoginPage() {
     }
   }
 
+  async function enterGuestMode() {
+    setBusy(true);
+    setMessage("");
+    setError("");
+    try {
+      const response = await fetch(`${apiBaseUrl()}/auth/guest`, { method: "POST" });
+      const payload = (await response.json().catch(() => ({}))) as { access_token?: string; detail?: string };
+      if (!response.ok || !payload.access_token) throw new Error(payload.detail || "游客体验暂时不可用");
+      saveAccessToken(payload.access_token);
+      window.location.assign("/");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "游客体验暂时不可用");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <main className="auth-shell">
       <section className="auth-card" aria-labelledby="auth-title">
@@ -77,6 +94,7 @@ export default function LoginPage() {
           {message && <div className="auth-alert auth-alert-success">{message}</div>}
           <button className="auth-submit" disabled={busy} type="submit"><LockKey size={18} />{busy ? "处理中…" : mode === "login" ? "登录工作台" : "创建账户"}<ArrowRight size={17} /></button>
         </form>
+        <button className="auth-guest-button" disabled={busy} type="button" onClick={() => void enterGuestMode()}><Flask size={17} />游客体验（不保存历史）</button>
         <p className="auth-footnote">账户由 Supabase Auth 安全托管，密码不会写入本项目数据库。</p>
       </section>
     </main>

@@ -34,7 +34,11 @@ npm run dev
 ## 认证与接口
 首页支持未登录只读预览；上传年报、运行示例分析、查看历史任务和订阅 SSE 等功能要求邮箱+密码登录。认证由 Supabase Auth 托管。注册后如果 Supabase 开启了邮箱确认，需要先点击确认邮件，再返回登录页。
 
+登录页同时提供“游客体验”。游客会获得一个短期进程内 token，可以上传 PDF 或运行示例并查看完整的 Agent 流程、指标和报告；游客任务、报告、向量片段和 SSE 事件只保存在当前后端进程的内存中，不写入 Supabase，也不会出现在研究档案或历史任务列表。游客会话默认 1 小时有效，刷新页面或 Render 实例重启后不保证保留；需要保存和恢复任务时请使用邮箱注册/登录。
+
 `POST /auth/signup` 注册；`POST /auth/login` 登录并返回 access token；`GET /auth/me` 校验当前登录用户。除 `/healthz`、`/readyz` 和认证接口外，任务接口都要求 `Authorization: Bearer <access_token>`。`POST /tasks` 上传字段 `file`；`GET /stream/{task_id}` 订阅 SSE（原生 EventSource 使用短期 `access_token` 查询参数，支持 `Last-Event-ID` 断线补发）；`GET /tasks/{task_id}` 获取当前用户的 Markdown 与 JSON 报告；`GET /tasks?limit=50` 只返回当前用户的历史任务。
+
+游客入口为 `POST /auth/guest`，返回与登录接口兼容的 `access_token`；该 token 只在当前实例的内存注册表中有效，不能用于恢复其他游客会话。
 
 任务表通过 `user_id` 关联 Supabase Auth 用户，用户之间不会互相看到任务、报告或事件。执行 schema 迁移后，旧的未归属任务不会展示给新登录用户。
 ## 首页官方年报示例

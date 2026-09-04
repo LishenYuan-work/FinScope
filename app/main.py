@@ -7,8 +7,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import os
 import re
+import secrets
 import tempfile
 import time
 import urllib.error
@@ -254,6 +256,7 @@ class AuthResponse(BaseModel):
 class AuthUser(BaseModel):
     id: str
     email: Optional[str] = None
+    is_guest: bool = False
 
 
 class SupabaseAuth:
@@ -526,8 +529,102 @@ class SupabaseStore:
         return response.data or []
 
 
+class GuestStore:
+    """Ephemeral task store used by guest sessions.
+
+    Guest uploads never touch Supabase tables or Storage. The process keeps
+    only the active task, report, chunks, and SSE events needed by the current
+    browser session; a refresh, expiry, or process restart removes access.
+    """
+
+    def __init__(self) -> None:
+        self.tasks: Dict[str, Dict[str, Any]] = {}
+        self.reports: Dict[str, Dict[str, Any]] = {}
+        self.chunks: Dict[str, List[Dict[str, Any]]] = {}
+        self.events: Dict[str, List[Dict[str, Any]]] = {}
+
+    def create_task(self, filename: str, storage_path: str, user_id: str, task_id: Optional[str] = None) -> str:
+        task_id = task_id or str(uuid4())
+        now = datetime.now(timezone.utc).isoformat()
+        self.tasks[task_id] = {
+            "id": task_id,
+            "filename": filename,
+            "storage_path": storage_path,
+            "status": "pending",
+            "error_message": None,
+            "created_at": now,
+            "updated_at": now,
+            "guest_user_id": user_id,
+        }
+        self.events[task_id] = []
+        return task_id
+
+    def update_task(self, task_id: str, status: TaskStatus, error: Optional[str] = None) -> None:
+        task = self.tasks[task_id]
+        task.update({"status": status, "updated_at": datetime.now(timezone.utc).isoformat()})
+        if error:
+            task["error_message"] = error
+
+    def save_report(self, task_id: str, markdown: str, report_json: Dict[str, Any]) -> None:
+        self.reports[task_id] = {"markdown": markdown, "report_json": report_json}
+
+    def save_chunks(self, task_id: str, chunks: List[Dict[str, Any]], vectors: List[List[float]]) -> None:
+        self.chunks[task_id] = [
+            {
+                "chunk_id": chunk["chunk_id"],
+                "page": chunk["page"],
+                "content": chunk["text"],
+                "embedding": vector,
+            }
+            for chunk, vector in zip(chunks, vectors)
+        ]
+
+    def search_chunks(self, task_id: str, vector: List[float], limit: int = 8) -> List[Dict[str, Any]]:
+        """Search guest chunks in-process without writing vectors to Supabase."""
+        rows = self.chunks.get(task_id, [])
+        if not rows:
+            return []
+
+        def cosine(left: Any, right: List[float]) -> float:
+            if not isinstance(left, list) or len(left) != len(right):
+                return 0.0
+            dot = sum(float(a) * float(b) for a, b in zip(left, right))
+            left_norm = math.sqrt(sum(float(a) * float(a) for a in left))
+            right_norm = math.sqrt(sum(float(b) * float(b) for b in right))
+            return dot / (left_norm * right_norm) if left_norm and right_norm else 0.0
+
+        ranked = sorted(rows, key=lambda row: cosine(row.get("embedding"), vector), reverse=True)
+        return [{key: value for key, value in row.items() if key != "embedding"} for row in ranked[:limit]]
+
+    def purge_user(self, user_id: str) -> List[str]:
+        """Drop all ephemeral data owned by an expired guest session."""
+        task_ids = [task_id for task_id, task in self.tasks.items() if task.get("guest_user_id") == user_id]
+        for task_id in task_ids:
+            self.tasks.pop(task_id, None)
+            self.reports.pop(task_id, None)
+            self.chunks.pop(task_id, None)
+            self.events.pop(task_id, None)
+        return task_ids
+
+    def get_task(self, task_id: str, user_id: Optional[str] = None) -> Dict[str, Any]:
+        task = self.tasks.get(task_id)
+        if not task or (user_id and task.get("guest_user_id") != user_id):
+            raise KeyError(task_id)
+        report = self.reports.get(task_id, {})
+        return {**task, "report_markdown": report.get("markdown"), "report_json": report.get("report_json")}
+
+    def append_event(self, task_id: str, event: str, payload: Dict[str, Any]) -> int:
+        rows = self.events.setdefault(task_id, [])
+        event_id = len(rows) + 1
+        rows.append({"id": event_id, "event": event, "payload": payload})
+        return event_id
+
+    def list_events(self, task_id: str, after_id: int = 0, limit: int = 500) -> List[Dict[str, Any]]:
+        return [row for row in self.events.get(task_id, []) if int(row["id"]) > after_id][:limit]
+
+
 class ReportAgents:
-    def __init__(self, store: SupabaseStore, emit):
+    def __init__(self, store: Any, emit):
         self.store, self.emit = store, emit
         if ChatOpenAI is None or OpenAIEmbeddings is None:
             raise RuntimeError("LangChain依赖未安装")
@@ -947,6 +1044,9 @@ app.add_middleware(
 )
 store: SupabaseStore | None = None
 auth_service: SupabaseAuth | None = None
+guest_store = GuestStore()
+guest_sessions: Dict[str, Dict[str, Any]] = {}
+task_stores: Dict[str, Any] = {}
 bearer_scheme = HTTPBearer(auto_error=False)
 # Queues only cover currently connected clients. Durable replay comes from
 # analysis_task_events, so a process restart does not erase the audit trail.
@@ -964,7 +1064,18 @@ async def current_user(
 ) -> AuthUser:
     """Validate a Supabase access token for protected API routes."""
     token = credentials.credentials if credentials else access_token
-    if not token or auth_service is None:
+    if not token:
+        raise HTTPException(status_code=401, detail="请先登录")
+    if token.startswith("guest_"):
+        session = guest_sessions.get(token)
+        if session and float(session.get("expires_at", 0)) > time.time():
+            return AuthUser(id=str(session["user_id"]), is_guest=True)
+        expired_user_id = str(session.get("user_id", "")) if session else ""
+        guest_sessions.pop(token, None)
+        if expired_user_id:
+            purge_guest_user(expired_user_id)
+        raise HTTPException(status_code=401, detail="游客会话已过期，请重新进入游客体验")
+    if auth_service is None:
         raise HTTPException(status_code=401, detail="请先登录")
     try:
         return await asyncio.to_thread(auth_service.get_user, token)
@@ -975,8 +1086,22 @@ async def current_user(
         raise HTTPException(status_code=503, detail="认证服务暂时不可用") from exc
 
 
+def is_guest(user: Optional[AuthUser]) -> bool:
+    return isinstance(user, AuthUser) and user.is_guest
+
+
+def task_store_for(task_id: str) -> Any:
+    return task_stores.get(task_id) or store
+
+
 def task_queue(task_id: str) -> "asyncio.Queue[Dict[str, Any]]":
     return events.setdefault(task_id, asyncio.Queue(maxsize=1000))
+
+
+def purge_guest_user(user_id: str) -> None:
+    """Remove expired guest records and their task-store references."""
+    for task_id in guest_store.purge_user(user_id):
+        task_stores.pop(task_id, None)
 
 
 async def probe_event_replay() -> None:
@@ -1131,6 +1256,7 @@ async def read_pdf_upload(file: UploadFile, limit: int) -> bytes:
 async def emit(task_id: str, event: str, payload: Dict[str, Any]) -> None:
     global event_persistence_available
     queue = task_queue(task_id)
+    task_store = task_store_for(task_id)
     output = payload.get("output")
     messages: List[Dict[str, Any]] = []
     if event == "agent" and isinstance(output, str) and len(output) > 600:
@@ -1147,7 +1273,14 @@ async def emit(task_id: str, event: str, payload: Dict[str, Any]) -> None:
 
     for message in messages:
         event_id: Optional[int] = None
-        if store is not None and event_persistence_available is not False:
+        if isinstance(task_store, GuestStore):
+            try:
+                event_id = await asyncio.to_thread(
+                    task_store.append_event, task_id, message["event"], message["payload"]
+                )
+            except Exception as exc:
+                print(f"Guest event persistence failed: {exc}")
+        elif store is not None and event_persistence_available is not False:
             try:
                 event_id = await asyncio.to_thread(
                     store.append_event, task_id, message["event"], message["payload"]
@@ -1171,14 +1304,16 @@ async def emit(task_id: str, event: str, payload: Dict[str, Any]) -> None:
             queue.put_nowait(envelope)
 
 
-async def run_graph(task_id: str, file_path: str) -> None:
-    assert store is not None
+async def run_graph(task_id: str, file_path: str, task_store: Any | None = None) -> None:
+    task_store = task_store or task_store_for(task_id)
+    if task_store is None:
+        raise RuntimeError("任务存储未初始化")
     global analysis_semaphore
     if analysis_semaphore is None:
         analysis_semaphore = asyncio.Semaphore(_env_int("MAX_CONCURRENT_ANALYSES", 1, 1, 4))
     try:
         async with analysis_semaphore:
-            agents = ReportAgents(store, emit)
+            agents = ReportAgents(task_store, emit)
             graph = StateGraph(AgentState)
             # Keep node names distinct from AgentState keys; LangGraph rejects collisions.
             graph.add_node("parsing_agent", agents.parsing)
@@ -1193,7 +1328,7 @@ async def run_graph(task_id: str, file_path: str) -> None:
             await graph.compile().ainvoke({"task_id": task_id, "file_path": file_path, "status": "pending"})
     except Exception as exc:
         try:
-            await asyncio.to_thread(store.update_task, task_id, "error", str(exc))
+            await asyncio.to_thread(task_store.update_task, task_id, "error", str(exc))
         except Exception as persist_exc:
             print(f"Failed to persist task error for {task_id}: {persist_exc}")
         await emit(task_id, "status", {"status": "error", "error": str(exc)})
@@ -1300,6 +1435,33 @@ async def auth_me(user: AuthUser = Depends(current_user)) -> AuthUser:
     return user
 
 
+@app.post("/auth/guest", response_model=AuthResponse)
+async def guest_login() -> AuthResponse:
+    """Issue a short-lived in-memory token without creating a Supabase user."""
+    # Opportunistically reclaim expired sessions whenever a new demo starts.
+    now = time.time()
+    for key, value in list(guest_sessions.items()):
+        if float(value.get("expires_at", 0)) <= now:
+            guest_sessions.pop(key, None)
+            expired_user_id = str(value.get("user_id", ""))
+            if expired_user_id:
+                purge_guest_user(expired_user_id)
+    token = f"guest_{secrets.token_urlsafe(32)}"
+    user_id = f"guest:{uuid4()}"
+    ttl = _env_int("GUEST_SESSION_TTL_SECONDS", 3600, 300, 86400)
+    guest_sessions[token] = {"user_id": user_id, "expires_at": time.time() + ttl}
+    # Keep the process-local registry bounded if many demo visitors arrive.
+    if len(guest_sessions) > 1000:
+        for key, value in list(guest_sessions.items()):
+            if float(value.get("expires_at", 0)) <= now:
+                guest_sessions.pop(key, None)
+    return AuthResponse(
+        access_token=token,
+        expires_in=ttl,
+        user={"id": user_id, "is_guest": True},
+    )
+
+
 @app.post("/tasks", response_model=TaskCreateResponse)
 async def upload_pdf(
     background: BackgroundTasks,
@@ -1308,33 +1470,38 @@ async def upload_pdf(
 ) -> TaskCreateResponse:
     if not file.filename or not file.filename.lower().endswith(".pdf"):
         raise HTTPException(400, "仅支持PDF文件")
-    if store is None:
+    if store is None and not is_guest(user):
         raise HTTPException(503, "后端未配置 SUPABASE_URL 或 SUPABASE_SERVICE_KEY")
     
     data = await read_pdf_upload(file, max_upload_bytes())
     task_id = str(uuid4())
+    task_store: Any = guest_store if is_guest(user) else store
+    if task_store is None:
+        raise HTTPException(503, "任务存储未初始化")
+    task_stores[task_id] = task_store
     placeholder = f"pending://{task_id}/{SupabaseStore._safe_filename(file.filename)}"
     storage_path: Optional[str] = None
     try:
-        await asyncio.to_thread(store.create_task, file.filename, placeholder, user.id, task_id)
-        storage_path = await asyncio.to_thread(store.upload_document, task_id, file.filename, data)
-        await asyncio.to_thread(store.update_storage_path, task_id, storage_path)
+        await asyncio.to_thread(task_store.create_task, file.filename, placeholder, user.id, task_id)
+        if not is_guest(user):
+            storage_path = await asyncio.to_thread(store.upload_document, task_id, file.filename, data)  # type: ignore[union-attr]
+            await asyncio.to_thread(store.update_storage_path, task_id, storage_path)  # type: ignore[union-attr]
         temp = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
         temp.write(data)
         temp.close()
     except Exception as exc:
         if storage_path:
             try:
-                await asyncio.to_thread(store.delete_document, storage_path)
+                await asyncio.to_thread(store.delete_document, storage_path)  # type: ignore[union-attr]
             except Exception as cleanup_exc:
                 print(f"Uploaded document cleanup failed for {task_id}: {cleanup_exc}")
         try:
-            await asyncio.to_thread(store.update_task, task_id, "error", f"文件持久化失败: {exc}")
+            await asyncio.to_thread(task_store.update_task, task_id, "error", f"文件持久化失败: {exc}")
         except Exception:
             pass
         raise HTTPException(503, f"文件持久化失败，请检查 Supabase Storage 配置: {exc}") from exc
     task_queue(task_id)
-    background.add_task(run_graph, task_id, temp.name)
+    background.add_task(run_graph, task_id, temp.name, task_store)
     return TaskCreateResponse(task_id=task_id, status="pending")
 
 
@@ -1345,14 +1512,22 @@ async def stream(
     after_id: Optional[int] = None,
     user: Optional[AuthUser] = Depends(current_user),
 ) -> StreamingResponse:
-    if store is None:
+    task_store = task_store_for(task_id)
+    if task_store is None:
         raise HTTPException(503, "服务尚未就绪")
-    owner_id = user.id if isinstance(user, AuthUser) else None
+    if is_guest(user):
+        owner_id = user.id
+        if not isinstance(task_store, GuestStore):
+            raise HTTPException(404, "任务不存在")
+    else:
+        owner_id = user.id if isinstance(user, AuthUser) else None
     try:
-        if owner_id is None:
-            current = await asyncio.to_thread(store.get_task, task_id)
+        if isinstance(task_store, GuestStore):
+            current = await asyncio.to_thread(task_store.get_task, task_id, owner_id)
+        elif owner_id is None:
+            current = await asyncio.to_thread(task_store.get_task, task_id)
         else:
-            current = await asyncio.to_thread(store.get_task, task_id, owner_id)
+            current = await asyncio.to_thread(task_store.get_task, task_id, owner_id)
     except KeyError:
         raise HTTPException(404, "任务不存在")
     except Exception as exc:
@@ -1370,10 +1545,10 @@ async def stream(
         terminal = False
         replay_count = 0
         replay_after = replay_after_id
-        if store is not None:
+        if task_store is not None:
             while not terminal:
                 try:
-                    replay_page = await asyncio.to_thread(store.list_events, task_id, replay_after, 500)
+                    replay_page = await asyncio.to_thread(task_store.list_events, task_id, replay_after, 500)
                 except Exception as exc:
                     print(f"Supabase event replay failed for {task_id}: {exc}")
                     replay_page = []
@@ -1433,11 +1608,14 @@ async def stream(
 
 @app.get("/tasks/{task_id}", response_model=TaskResult)
 async def task_result(task_id: str, user: Optional[AuthUser] = Depends(current_user)) -> TaskResult:
-    if store is None:
+    task_store = task_store_for(task_id)
+    if task_store is None:
         raise HTTPException(503, "后端未配置 Supabase")
     try:
         owner_id = user.id if isinstance(user, AuthUser) else None
-        row = await asyncio.to_thread(store.get_task, task_id) if owner_id is None else await asyncio.to_thread(store.get_task, task_id, owner_id)
+        if is_guest(user) and not isinstance(task_store, GuestStore):
+            raise KeyError(task_id)
+        row = await asyncio.to_thread(task_store.get_task, task_id, owner_id) if owner_id is not None else await asyncio.to_thread(task_store.get_task, task_id)
     except KeyError:
         raise HTTPException(404, "任务不存在")
     except Exception as exc:
@@ -1451,6 +1629,8 @@ async def task_result(task_id: str, user: Optional[AuthUser] = Depends(current_u
 
 @app.get("/tasks", response_model=List[TaskListItem])
 async def list_tasks(limit: int = 50, user: Optional[AuthUser] = Depends(current_user)) -> List[TaskListItem]:
+    if is_guest(user):
+        return []
     if store is None:
         raise HTTPException(503, "后端未配置 Supabase")
     try:

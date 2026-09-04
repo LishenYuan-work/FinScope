@@ -38,7 +38,7 @@ import {
 } from "recharts";
 import ReactMarkdown from "react-markdown";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { authFetch, clearAccessToken, getAccessToken } from "../lib/auth";
+import { authFetch, clearAccessToken, getAccessToken, isGuestToken } from "../lib/auth";
 
 declare global {
   interface Window {
@@ -283,17 +283,17 @@ function ConnectionBadge({ state }: { state: ConnectionState }) {
   return <span className={`connection-badge ${config[state].className}`}><span className="connection-dot" />{config[state].label}</span>;
 }
 
-function ResearchSidebar({ tasks, selectedId, archiveOpen, open, readOnly, onSelect, onNew, onOpenArchive, onOpenCurrent, onClose, onLogout, onLogin }: { tasks: TaskSummary[]; selectedId?: string; archiveOpen: boolean; open: boolean; readOnly: boolean; onSelect: (task: TaskSummary) => void; onNew: () => void; onOpenArchive: () => void; onOpenCurrent: () => void; onClose: () => void; onLogout: () => void; onLogin: () => void }) {
+function ResearchSidebar({ tasks, selectedId, archiveOpen, open, readOnly, guestMode, onSelect, onNew, onOpenArchive, onOpenCurrent, onClose, onLogout, onLogin }: { tasks: TaskSummary[]; selectedId?: string; archiveOpen: boolean; open: boolean; readOnly: boolean; guestMode: boolean; onSelect: (task: TaskSummary) => void; onNew: () => void; onOpenArchive: () => void; onOpenCurrent: () => void; onClose: () => void; onLogout: () => void; onLogin: () => void }) {
   return <>
     {open && <button aria-label="关闭历史任务栏" className="sidebar-overlay no-print" onClick={onClose} />}
     <aside className={`research-sidebar no-print ${open ? "is-open" : ""}`}>
       <div className="sidebar-head"><div className="brand-lockup"><div className="brand-mark"><ChartLineUp size={18} weight="bold" /></div><div><div className="brand-name">FinScope</div><div className="brand-caption">AI research studio</div></div></div><button aria-label="关闭侧边栏" className="sidebar-close" onClick={onClose}><X size={17} /></button></div>
       <button className={`new-analysis-button ${readOnly ? "is-locked" : ""}`} onClick={readOnly ? onLogin : onNew}><Sparkle size={17} weight="fill" /> {readOnly ? "登录后开始分析" : "新建分析"} {!readOnly && <span className="shortcut"><Command size={12} /> K</span>}</button>
-      <div className="sidebar-section-label">工作台</div>
-      <div className="sidebar-nav"><button className={`sidebar-nav-item ${!archiveOpen ? "is-active" : ""}`} onClick={readOnly ? onLogin : onOpenCurrent}><ListChecks size={17} />当前分析<span className="nav-count">{selectedId ? "1" : "0"}</span></button><button className={`sidebar-nav-item ${archiveOpen ? "is-active" : ""} ${readOnly ? "is-locked" : ""}`} onClick={readOnly ? onLogin : onOpenArchive}><BookOpenText size={17} />研究档案<span className="nav-count">{readOnly ? "—" : tasks.length}</span></button></div>
+      <div className="sidebar-section-label">{guestMode ? "游客工作台" : "工作台"}</div>
+      <div className="sidebar-nav"><button className={`sidebar-nav-item ${!archiveOpen ? "is-active" : ""}`} onClick={readOnly ? onLogin : onOpenCurrent}><ListChecks size={17} />当前分析<span className="nav-count">{selectedId ? "1" : "0"}</span></button><button className={`sidebar-nav-item ${archiveOpen ? "is-active" : ""} ${readOnly || guestMode ? "is-locked" : ""}`} onClick={readOnly ? onLogin : onOpenArchive}><BookOpenText size={17} />研究档案<span className="nav-count">{readOnly || guestMode ? "—" : tasks.length}</span></button></div>
       <div className="sidebar-section-label history-label">历史任务</div>
-      <div className="task-list">{tasks.length === 0 ? <div className="sidebar-empty"><FileText size={18} /><span>{readOnly ? "登录后查看你的历史任务。" : "上传第一份年报，历史分析会显示在这里。"}</span></div> : tasks.map((task) => <button key={task.id} onClick={() => { onSelect(task); onClose(); }} className={`task-item ${task.id === selectedId ? "is-selected" : ""}`}><div className="task-item-top"><FileText size={16} /><span>{task.filename}</span><CaretRight size={14} className="task-arrow" /></div><div className="task-item-meta"><span>{formatDate(task.created_at)}</span><StatusChip status={task.status} /></div></button>)}</div>
-      <div className="sidebar-footer"><div className="secure-line"><SealCheck size={15} weight="fill" />数据仅在已配置后端处理</div>{readOnly ? <button className="logout-button login-sidebar-button" onClick={onLogin}><SignIn size={15} />登录工作台</button> : <button className="logout-button" onClick={onLogout}><SignOut size={15} />退出登录</button>}<div className="sidebar-version">FinScope Console · 01</div></div>
+      <div className="task-list">{tasks.length === 0 ? <div className="sidebar-empty"><FileText size={18} /><span>{guestMode ? "游客任务不会保存到历史记录。" : readOnly ? "登录后查看你的历史任务。" : "上传第一份年报，历史分析会显示在这里。"}</span></div> : tasks.map((task) => <button key={task.id} onClick={() => { onSelect(task); onClose(); }} className={`task-item ${task.id === selectedId ? "is-selected" : ""}`}><div className="task-item-top"><FileText size={16} /><span>{task.filename}</span><CaretRight size={14} className="task-arrow" /></div><div className="task-item-meta"><span>{formatDate(task.created_at)}</span><StatusChip status={task.status} /></div></button>)}</div>
+      <div className="sidebar-footer"><div className="secure-line"><SealCheck size={15} weight="fill" />{guestMode ? "游客任务仅在本次会话可见" : "数据仅在已配置后端处理"}</div>{readOnly ? <button className="logout-button login-sidebar-button" onClick={onLogin}><SignIn size={15} />登录工作台</button> : <button className="logout-button" onClick={onLogout}><SignOut size={15} />{guestMode ? "结束游客体验" : "退出登录"}</button>}<div className="sidebar-version">FinScope Console · 01</div></div>
     </aside>
   </>;
 }
@@ -411,6 +411,7 @@ function ReportPreview({ result }: { result?: TaskResult }) {
 export default function HomePage() {
   const [authReady, setAuthReady] = useState(false);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [isGuest, setIsGuest] = useState(false);
   const [tasks, setTasks] = useState<TaskSummary[]>([]);
   const [selected, setSelected] = useState<TaskSummary | null>(null);
   const [file, setFile] = useState<File | null>(null);
@@ -522,15 +523,15 @@ export default function HomePage() {
   useEffect(() => { subscribeRef.current = subscribe; }, [subscribe]);
 
   const chooseTask = async (task: TaskSummary) => {
-    if (!isAuthenticated) { window.location.assign("/login"); return; }
+    if (!isAuthenticated || isGuest) { if (!isAuthenticated) window.location.assign("/login"); return; }
     closeStream(); setArchiveOpen(false); setSelected(task); setFile(null); resetPipeline();
     try { const loaded = await loadResult(task.id); if (loaded.status !== "summary_finish" && loaded.status !== "error") subscribe(task.id); } catch (cause) { setError(cause instanceof Error ? cause.message : "任务加载失败"); }
   };
-  const newAnalysis = () => { if (!isAuthenticated) { window.location.assign("/login"); return; } closeStream(); setArchiveOpen(false); setSelected(null); setResult(undefined); setFile(null); setStatus("pending"); resetPipeline(); };
-  const openArchive = () => { if (!isAuthenticated) { window.location.assign("/login"); return; } closeStream(); setArchiveOpen(true); setError(""); setSidebarOpen(false); };
+  const newAnalysis = () => { if (!isAuthenticated && !isGuest) { window.location.assign("/login"); return; } closeStream(); setArchiveOpen(false); setSelected(null); setResult(undefined); setFile(null); setStatus("pending"); resetPipeline(); };
+  const openArchive = () => { if (isGuest) { setError("游客体验不保存历史记录，注册或登录后即可使用研究档案"); return; } if (!isAuthenticated) { window.location.assign("/login"); return; } closeStream(); setArchiveOpen(true); setError(""); setSidebarOpen(false); };
   const openCurrent = () => { setArchiveOpen(false); setSidebarOpen(false); };
   const loadExample = async (report: OfficialReport) => {
-    if (!isAuthenticated) { window.location.assign("/login"); return; }
+    if (!isAuthenticated && !isGuest) { window.location.assign("/login"); return; }
     setExampleLoadingPath(report.localPath);
     setBusy(true);
     setError("");
@@ -547,7 +548,7 @@ export default function HomePage() {
       const task: TaskSummary = { id: created.task_id, filename, status: created.status, created_at: new Date().toISOString(), exampleId: report.id };
       closeStream();
       resetPipeline();
-      setTasks((current) => [task, ...current]);
+      if (!isGuest) setTasks((current) => [task, ...current]);
       setSelected(task);
       setFile(null);
       setResult(undefined);
@@ -561,16 +562,18 @@ export default function HomePage() {
       setBusy(false);
     }
   };
-  const refresh = async () => { if (!isAuthenticated) { window.location.assign("/login"); return; } if (!selected) return; try { const loaded = await loadResult(selected.id); setError(""); if (loaded.status !== "summary_finish" && loaded.status !== "error") subscribe(selected.id); } catch (cause) { setError(cause instanceof Error ? cause.message : "任务刷新失败"); } };
-  const upload = async () => { if (!isAuthenticated) { window.location.assign("/login"); return; } if (!file) return; setBusy(true); setError(""); const body = new FormData(); body.append("file", file); try { const response = await authFetch(`${apiBaseUrl()}/tasks`, { method: "POST", body }); if (!response.ok) throw new Error((await response.text()) || "上传失败"); const created = (await response.json()) as { task_id: string; status: Status }; const task: TaskSummary = { id: created.task_id, filename: file.name, status: created.status, created_at: new Date().toISOString() }; setTasks((current) => [task, ...current]); setSelected(task); setResult(undefined); resetPipeline(); setStatus("pending"); subscribe(created.task_id); } catch (cause) { setError(cause instanceof Error ? cause.message : "上传失败"); } finally { setBusy(false); } };
+  const refresh = async () => { if (!isAuthenticated && !isGuest) { window.location.assign("/login"); return; } if (!selected) return; try { const loaded = await loadResult(selected.id); setError(""); if (loaded.status !== "summary_finish" && loaded.status !== "error") subscribe(selected.id); } catch (cause) { setError(cause instanceof Error ? cause.message : "任务刷新失败"); } };
+  const upload = async () => { if (!isAuthenticated && !isGuest) { window.location.assign("/login"); return; } if (!file) return; setBusy(true); setError(""); const body = new FormData(); body.append("file", file); try { const response = await authFetch(`${apiBaseUrl()}/tasks`, { method: "POST", body }); if (!response.ok) throw new Error((await response.text()) || "上传失败"); const created = (await response.json()) as { task_id: string; status: Status }; const task: TaskSummary = { id: created.task_id, filename: file.name, status: created.status, created_at: new Date().toISOString() }; if (!isGuest) setTasks((current) => [task, ...current]); setSelected(task); setResult(undefined); resetPipeline(); setStatus("pending"); subscribe(created.task_id); } catch (cause) { setError(cause instanceof Error ? cause.message : "上传失败"); } finally { setBusy(false); } };
 
   useEffect(() => {
-    setIsAuthenticated(Boolean(getAccessToken()));
+    const token = getAccessToken();
+    setIsAuthenticated(Boolean(token));
+    setIsGuest(isGuestToken(token));
     setAuthReady(true);
   }, []);
   const headline = selected ? selected.filename : "从年报开始，建立你的研究判断";
-  useEffect(() => { if (authReady && isAuthenticated) void loadTasks(); return closeStream; }, [authReady, isAuthenticated, closeStream, loadTasks]);
+  useEffect(() => { if (authReady && isAuthenticated && !isGuest) void loadTasks(); return closeStream; }, [authReady, isAuthenticated, isGuest, closeStream, loadTasks]);
   if (!authReady) return <main className="auth-loading"><div className="auth-loading-dot" />正在验证登录状态…</main>;
   const logout = () => { closeStream(); clearAccessToken(); window.location.assign("/login"); };
-  return <main className="app-shell"><ResearchSidebar tasks={tasks} selectedId={selected?.id} archiveOpen={archiveOpen} open={sidebarOpen} readOnly={!isAuthenticated} onSelect={chooseTask} onNew={newAnalysis} onOpenArchive={openArchive} onOpenCurrent={openCurrent} onClose={() => setSidebarOpen(false)} onLogout={logout} onLogin={() => window.location.assign("/login")} /><div className="main-column"><header className="topbar no-print"><div className="topbar-inner"><button aria-label="打开历史任务" className="mobile-menu-button" onClick={() => setSidebarOpen(true)}><SidebarSimple size={20} /></button><div className="topbar-context"><div className="topbar-kicker"><span className="kicker-line" /> AI 财报多 Agent 投研分析平台</div><h1>{archiveOpen ? "统一管理你的研究判断" : headline}</h1></div><div className="topbar-actions">{isAuthenticated ? selected && !archiveOpen && <><StatusChip status={status} /><button aria-label="刷新任务" className="icon-button" onClick={() => void refresh()}><ArrowClockwise size={18} /></button></> : <button className="topbar-login-button" onClick={() => window.location.assign("/login")}><SignIn size={16} />登录 / 注册</button>}</div></div></header><div className="page-content">{!isAuthenticated && <div className="readonly-banner no-print"><SealCheck size={17} weight="fill" /><div><strong>只读预览模式</strong><span>登录后才能上传年报、运行 Agent 和保存研究档案。</span></div><button onClick={() => window.location.assign("/login")}><SignIn size={15} />登录</button></div>}{error && <div className="error-banner no-print"><WarningCircle size={18} weight="fill" /><span>{error}</span><button aria-label="关闭错误提示" onClick={() => setError("")}><X size={15} /></button></div>}{archiveOpen ? <ResearchArchive tasks={tasks} onSelect={chooseTask} onRefresh={() => void loadTasks()} /> : <>{!selected && <UploadPanel file={file} busy={busy} readOnly={!isAuthenticated} onFile={setFile} onUpload={upload} onClear={() => setFile(null)} onRequireLogin={() => window.location.assign("/login")} />}{selected && <AgentPipeline currentStatus={status} agents={agents} />}{!selected && <OfficialReportsPanel onLoadExample={loadExample} loadingPath={exampleLoadingPath} readOnly={!isAuthenticated} onRequireLogin={() => window.location.assign("/login")} />}<div className="stream-grid"><OutputStream outputs={outputs} connection={connection} /><Snapshot result={result} status={status} /></div><MetricCards report={result?.report_json} /><ChartsPanel report={result?.report_json} /><IndustryComparison report={result?.report_json} /><RiskInsights report={result?.report_json} /><ReportPreview result={result} /></>}</div></div></main>;
+  return <main className="app-shell"><ResearchSidebar tasks={tasks} selectedId={selected?.id} archiveOpen={archiveOpen} open={sidebarOpen} readOnly={!isAuthenticated && !isGuest} guestMode={isGuest} onSelect={chooseTask} onNew={newAnalysis} onOpenArchive={openArchive} onOpenCurrent={openCurrent} onClose={() => setSidebarOpen(false)} onLogout={logout} onLogin={() => window.location.assign("/login")} /><div className="main-column"><header className="topbar no-print"><div className="topbar-inner"><button aria-label="打开历史任务" className="mobile-menu-button" onClick={() => setSidebarOpen(true)}><SidebarSimple size={20} /></button><div className="topbar-context"><div className="topbar-kicker"><span className="kicker-line" /> AI 财报多 Agent 投研分析平台</div><h1>{archiveOpen ? "统一管理你的研究判断" : headline}</h1></div><div className="topbar-actions">{isAuthenticated ? selected && !archiveOpen && <><StatusChip status={status} /><button aria-label="刷新任务" className="icon-button" onClick={() => void refresh()}><ArrowClockwise size={18} /></button></> : <button className="topbar-login-button" onClick={() => window.location.assign("/login")}><SignIn size={16} />登录 / 注册</button>}</div></div></header><div className="page-content">{!isAuthenticated && !isGuest && <div className="readonly-banner no-print"><SealCheck size={17} weight="fill" /><div><strong>只读预览模式</strong><span>登录后才能上传年报、运行 Agent 和保存研究档案。</span></div><button onClick={() => window.location.assign("/login")}><SignIn size={15} />登录</button></div>}{isGuest && <div className="guest-banner no-print"><SealCheck size={17} weight="fill" /><div><strong>游客体验模式</strong><span>可以运行上传和示例分析，本次任务不会保存到历史记录。</span></div><button onClick={() => { clearAccessToken(); window.location.assign("/login"); }}><SignIn size={15} />登录并保存</button></div>}{error && <div className="error-banner no-print"><WarningCircle size={18} weight="fill" /><span>{error}</span><button aria-label="关闭错误提示" onClick={() => setError("")}><X size={15} /></button></div>}{archiveOpen ? <ResearchArchive tasks={tasks} onSelect={chooseTask} onRefresh={() => void loadTasks()} /> : <>{!selected && <UploadPanel file={file} busy={busy} readOnly={!isAuthenticated && !isGuest} onFile={setFile} onUpload={upload} onClear={() => setFile(null)} onRequireLogin={() => window.location.assign("/login")} />}{selected && <AgentPipeline currentStatus={status} agents={agents} />}{!selected && <OfficialReportsPanel onLoadExample={loadExample} loadingPath={exampleLoadingPath} readOnly={!isAuthenticated && !isGuest} onRequireLogin={() => window.location.assign("/login")} />}<div className="stream-grid"><OutputStream outputs={outputs} connection={connection} /><Snapshot result={result} status={status} /></div><MetricCards report={result?.report_json} /><ChartsPanel report={result?.report_json} /><IndustryComparison report={result?.report_json} /><RiskInsights report={result?.report_json} /><ReportPreview result={result} /></>}</div></div></main>;
 }

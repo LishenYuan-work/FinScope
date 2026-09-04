@@ -40,6 +40,9 @@
 .auth-submit { display: flex; align-items: center; justify-content: center; gap: 8px; height: 46px; margin-top: 2px; border: 0; border-radius: 11px; color: white; background: linear-gradient(110deg, #398fed, #39b99d); box-shadow: 0 12px 25px rgba(65,170,166,.23); font-size: 12px; font-weight: 750; cursor: pointer; transition: transform .2s, box-shadow .2s; }
 .auth-submit:hover { transform: translateY(-1px); box-shadow: 0 16px 30px rgba(65,170,166,.3); }
 .auth-submit:disabled { cursor: wait; opacity: .65; transform: none; }
+.auth-guest-button { display: flex; align-items: center; justify-content: center; gap: 8px; width: 100%; height: 42px; margin-top: 10px; border: 1px solid #b9d9d3; border-radius: 11px; color: #277d70; background: #f7fcfb; font-size: 12px; font-weight: 720; cursor: pointer; transition: background .2s, border-color .2s; }
+.auth-guest-button:hover { border-color: #82c7ba; background: #ecf9f5; }
+.auth-guest-button:disabled { cursor: wait; opacity: .65; }
 .auth-footnote { margin: 24px 0 0; color: #9baab1; font-size: 10px; line-height: 1.6; text-align: center; }
 .auth-loading { display: grid; min-height: 100vh; place-items: center; gap: 10px; color: var(--muted-strong); background: #f7f9fb; font-size: 12px; }
 .auth-loading-dot { width: 8px; height: 8px; border-radius: 50%; background: #42b7a2; box-shadow: 0 0 0 7px rgba(66,183,162,.13); animation: auth-pulse 1.2s ease-in-out infinite; }
@@ -124,6 +127,13 @@ button:focus-visible, [role="button"]:focus-visible { outline: 2px solid var(--a
 .readonly-banner span { color: #668b88; font-size: 11px; }
 .readonly-banner button { display: inline-flex; align-items: center; gap: 6px; padding: 8px 11px; border: 1px solid #a9d7d1; border-radius: 9px; color: #267c72; background: white; font-size: 11px; font-weight: 750; }
 .readonly-banner button:hover { background: #ecfaf6; }
+.guest-banner { display: flex; align-items: center; gap: 11px; padding: 12px 15px; border: 1px solid #c7d9ec; border-radius: 13px; color: #2f6593; background: linear-gradient(110deg, #f3f8ff, #f4fbff); }
+.guest-banner > svg { flex: 0 0 auto; }
+.guest-banner > div { display: grid; gap: 2px; flex: 1; }
+.guest-banner strong { color: #2f5e8a; font-size: 12px; }
+.guest-banner span { color: #6a829b; font-size: 11px; }
+.guest-banner button { display: inline-flex; align-items: center; gap: 6px; padding: 8px 11px; border: 1px solid #b5cde4; border-radius: 9px; color: #2c6799; background: white; font-size: 11px; font-weight: 750; }
+.guest-banner button:hover { background: #edf5ff; }
 .error-banner { display: flex; align-items: flex-start; gap: 10px; padding: 12px 15px; border: 1px solid #f0cbc3; border-radius: 13px; color: #a84a3e; font-size: 12px; background: #fff5f2; }
 .error-banner span { flex: 1; }
 .error-banner button { border: 0; color: inherit; background: transparent; }
