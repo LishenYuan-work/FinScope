@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { CaretRight, DownloadSimple, FileText, Plus, X } from "@phosphor-icons/react";
+import ReactMarkdown from "react-markdown";
+import { useEffect, useRef, useState } from "react";
+import { CaretRight, CircleNotch, DownloadSimple, FileText, Plus, X } from "@phosphor-icons/react";
 import { authFetch, getAccessToken } from "../../lib/auth";
 
 type PageData = { title: string; sub: string; body: string };
@@ -114,6 +115,11 @@ export default function WorkspacePage() {
   const [liveTask, setLiveTask] = useState<TaskSummary | null>(null);
   const [pdfUrl, setPdfUrl] = useState("");
   const [status, setStatus] = useState<Status>("summary_finish");
+  const [file, setFile] = useState<File | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const streamRef = useRef<EventSource | null>(null);
+  const blobRef = useRef("");
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -145,11 +151,82 @@ export default function WorkspacePage() {
         if (list[0].exampleId && EXAMPLE_PDFS[list[0].exampleId]) setPdfUrl(EXAMPLE_PDFS[list[0].exampleId]);
         const sourcePage = data.report_json?.sources?.find((source) => typeof source.page === "number")?.page;
         if (sourcePage) setPage(sourcePage);
+        if (data.status !== "summary_finish" && data.status !== "error") subscribe(list[0].id);
       } catch {
         /* keep demo view when API is not configured */
       }
     })();
   }, []);
+
+  useEffect(() => () => {
+    streamRef.current?.close();
+    if (blobRef.current) URL.revokeObjectURL(blobRef.current);
+  }, []);
+
+  async function loadResult(taskId: string) {
+    const response = await authFetch(`${apiBaseUrl()}/tasks/${taskId}`);
+    if (!response.ok) throw new Error("任务结果加载失败");
+    const data = (await response.json()) as TaskResult;
+    setLive(data);
+    setStatus(data.status);
+    const sourcePage = data.report_json?.sources?.find((source) => typeof source.page === "number")?.page;
+    if (sourcePage) setPage(sourcePage);
+    return data;
+  }
+
+  function subscribe(taskId: string) {
+    streamRef.current?.close();
+    const token = getAccessToken();
+    const query = token ? `?access_token=${encodeURIComponent(token)}` : "";
+    const stream = new EventSource(`${apiBaseUrl()}/stream/${taskId}${query}`);
+    streamRef.current = stream;
+    stream.addEventListener("status", (event) => {
+      try {
+        const payload = JSON.parse((event as MessageEvent).data) as { status?: Status; error?: string };
+        if (payload.status) setStatus(payload.status);
+        if (payload.error) setError(payload.error);
+        if (payload.status === "summary_finish" || payload.status === "error") {
+          stream.close();
+          void loadResult(taskId);
+        }
+      } catch {
+        /* ignore malformed event */
+      }
+    });
+    stream.onerror = () => {
+      stream.close();
+      setError("实时连接已断开，请刷新任务状态");
+    };
+  }
+
+  async function upload() {
+    if (!getAccessToken()) { window.location.assign("/login"); return; }
+    if (!file) return;
+    setBusy(true);
+    setError("");
+    try {
+      const body = new FormData();
+      body.append("file", file);
+      const response = await authFetch(`${apiBaseUrl()}/tasks`, { method: "POST", body });
+      if (!response.ok) throw new Error((await response.text()) || "上传失败");
+      const created = (await response.json()) as { task_id: string; status: Status };
+      const task: TaskSummary = { id: created.task_id, filename: file.name, status: created.status, created_at: new Date().toISOString() };
+      if (blobRef.current) URL.revokeObjectURL(blobRef.current);
+      const localPdf = URL.createObjectURL(file);
+      blobRef.current = localPdf;
+      setPdfUrl(localPdf);
+      setLiveTask(task);
+      setLive(undefined);
+      setStatus(created.status);
+      setFile(null);
+      setModal(false);
+      subscribe(created.task_id);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "上传失败");
+    } finally {
+      setBusy(false);
+    }
+  }
 
   function locate(nextPage: number) {
     setPage(nextPage);
@@ -370,8 +447,9 @@ export default function WorkspacePage() {
         <div className="fs2-modal-card" onClick={(event) => event.stopPropagation()}>
           <div className="fs2-modal-head"><h3>新建分析</h3><button className="fs2-modal-close" onClick={() => setModal(false)} aria-label="关闭"><X size={16} /></button></div>
           <p>上传一份上市公司年报 PDF，四个 Agent 会依次完成解析、财务分析、风险研判和报告汇总。</p>
-          <div className="fs2-drop">拖拽 PDF 到这里，或点击选择文件<br /><span className="fs2-mono">PDF · MAX 50 MB</span></div>
-          <div className="fs2-modal-actions"><button className="fs2-btn" onClick={() => setModal(false)}>取消</button><button className="fs2-btn primary" onClick={() => { setModal(false); setToast("原型：上传入口将在正式版接入"); }}>开始分析</button></div>
+          <label className="fs2-drop">{file ? file.name : "拖拽 PDF 到这里，或点击选择文件"}<br /><span className="fs2-mono">PDF · MAX 50 MB</span><input type="file" accept="application/pdf,.pdf" style={{ display: "none" }} onChange={(event) => { const next = event.target.files?.[0]; if (!next) return; if (!next.name.toLowerCase().endsWith(".pdf")) { setError("仅支持 PDF 文件"); return; } if (next.size > 50 * 1024 * 1024) { setError("PDF 不能超过 50 MB"); return; } setFile(next); setError(""); }} /></label>
+          {error && <div className="fs2-form-error" role="alert">{error}</div>}
+          <div className="fs2-modal-actions"><button className="fs2-btn" onClick={() => setModal(false)}>取消</button><button className="fs2-btn primary" disabled={busy || !file} onClick={() => void upload()}>{busy ? <CircleNotch size={12} className="fs2-spin" /> : null}{busy ? "创建任务中" : "开始分析"}</button></div>
         </div>
       </div>
     </div>
