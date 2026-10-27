@@ -1627,6 +1627,58 @@ async def task_result(task_id: str, user: Optional[AuthUser] = Depends(current_u
     return TaskResult(task_id=task_id, status=row["status"], report_markdown=row.get("report_markdown"), report_json=row.get("report_json"), error=row.get("error_message"))
 
 
+@app.get("/tasks/{task_id}/file")
+async def task_file(task_id: str, user: Optional[AuthUser] = Depends(current_user)):
+    """Return the original PDF for a task after checking task ownership.
+
+    The frontend fetches this with the normal Authorization header and turns
+    the response into a local blob URL for the iframe PDF viewer.
+    """
+    if user is None:
+        raise HTTPException(401, "请先登录")
+    task_store = task_store_for(task_id)
+    if task_store is None:
+        raise HTTPException(503, "后端未配置 Supabase")
+    try:
+        owner_id = user.id if isinstance(user, AuthUser) else None
+        if is_guest(user) and not isinstance(task_store, GuestStore):
+            raise KeyError(task_id)
+        row = await asyncio.to_thread(task_store.get_task, task_id, owner_id) if owner_id is not None else await asyncio.to_thread(task_store.get_task, task_id)
+    except KeyError:
+        raise HTTPException(404, "任务不存在")
+    except Exception as exc:
+        print(f"Task file lookup failed for {task_id}: {exc}")
+        raise HTTPException(503, "任务文件服务暂时不可用") from exc
+
+    storage_path = str(row.get("storage_path") or "")
+    if not storage_path:
+        raise HTTPException(404, "该任务没有原始文件")
+    try:
+        if hasattr(task_store, "download_document"):
+            content = await asyncio.to_thread(task_store.download_document, storage_path)
+        else:
+            path = Path(storage_path)
+            if not path.is_file():
+                raise FileNotFoundError(storage_path)
+            content = await asyncio.to_thread(path.read_bytes)
+    except FileNotFoundError:
+        raise HTTPException(404, "原始文件不存在或已清理")
+    except Exception as exc:
+        print(f"Task file download failed for {task_id}: {exc}")
+        raise HTTPException(503, "原始文件读取失败") from exc
+
+    filename = str(row.get("filename") or "annual-report.pdf")
+    safe = "".join(ch for ch in filename if ch.isalnum() or ch in "._-") or "annual-report.pdf"
+    return StreamingResponse(
+        iter([content]),
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'inline; filename="{safe}"',
+            "Cache-Control": "private, max-age=60",
+        },
+    )
+
+
 @app.get("/tasks", response_model=List[TaskListItem])
 async def list_tasks(limit: int = 50, user: Optional[AuthUser] = Depends(current_user)) -> List[TaskListItem]:
     if is_guest(user):
