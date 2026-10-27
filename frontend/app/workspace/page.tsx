@@ -149,6 +149,7 @@ export default function WorkspacePage() {
         setLive(data);
         setStatus(data.status);
         if (list[0].exampleId && EXAMPLE_PDFS[list[0].exampleId]) setPdfUrl(EXAMPLE_PDFS[list[0].exampleId]);
+        else void loadPdf(list[0].id);
         const sourcePage = data.report_json?.sources?.find((source) => typeof source.page === "number")?.page;
         if (sourcePage) setPage(sourcePage);
         if (data.status !== "summary_finish" && data.status !== "error") subscribe(list[0].id);
@@ -172,6 +173,25 @@ export default function WorkspacePage() {
     const sourcePage = data.report_json?.sources?.find((source) => typeof source.page === "number")?.page;
     if (sourcePage) setPage(sourcePage);
     return data;
+  }
+
+  async function loadPdf(taskId: string) {
+    try {
+      if (blobRef.current) {
+        URL.revokeObjectURL(blobRef.current);
+        blobRef.current = "";
+      }
+      setPdfUrl("");
+      const response = await authFetch(`${apiBaseUrl()}/tasks/${taskId}/file`);
+      if (!response.ok) return;
+      const blob = await response.blob();
+      if (!blob.size) return;
+      const url = URL.createObjectURL(blob);
+      blobRef.current = url;
+      setPdfUrl(url);
+    } catch {
+      /* fall back to the explanatory PDF mock */
+    }
   }
 
   function subscribe(taskId: string) {
