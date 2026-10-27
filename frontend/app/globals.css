@@ -442,3 +442,11 @@ button:focus-visible, [role="button"]:focus-visible { outline: 2px solid var(--a
   .print-report { display: block !important; border: 0 !important; box-shadow: none !important; }
   .report-content { max-width: none; padding: 0; }
 }
+
+
+/* Chart unit selector: prevents mixing CNY / % / counts on one axis */
+.chart-tools { display: flex; align-items: center; gap: 14px; }
+.chart-unit { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 10px; font-weight: 700; white-space: nowrap; }
+.chart-unit select { height: 30px; padding: 0 8px; border: 1px solid var(--line); border-radius: 8px; color: var(--ink-soft); background: white; font-size: 10px; outline: 0; }
+.chart-unit select:focus { border-color: #76bfc0; box-shadow: 0 0 0 3px rgba(111,215,178,.13); }
+@media (max-width: 620px) { .chart-tools { align-items: flex-start; flex-direction: column; gap: 9px; } }

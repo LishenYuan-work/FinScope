@@ -321,10 +321,15 @@ function ResearchArchive({ tasks, onSelect, onRefresh }: { tasks: TaskSummary[];
   </section>;
 }
 
-function UploadPanel({ file, busy, readOnly, onFile, onUpload, onClear, onRequireLogin }: { file: File | null; busy: boolean; readOnly: boolean; onFile: (file: File) => void; onUpload: () => void; onClear: () => void; onRequireLogin: () => void }) {
+function UploadPanel({ file, busy, readOnly, onFile, onUpload, onClear, onRequireLogin, onInvalid }: { file: File | null; busy: boolean; readOnly: boolean; onFile: (file: File) => void; onUpload: () => void; onClear: () => void; onRequireLogin: () => void; onInvalid: (message: string) => void }) {
   const [dragging, setDragging] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
-  const accept = (candidate?: File) => { if (candidate && (candidate.type === "application/pdf" || candidate.name.toLowerCase().endsWith(".pdf"))) onFile(candidate); };
+  const accept = (candidate?: File) => {
+    if (!candidate) return;
+    if (!(candidate.type === "application/pdf" || candidate.name.toLowerCase().endsWith(".pdf"))) { onInvalid("仅支持 PDF 文件"); return; }
+    if (candidate.size > 50 * 1024 * 1024) { onInvalid("PDF 不能超过 50 MB"); return; }
+    onFile(candidate);
+  };
   return <section className={`upload-panel ${dragging ? "is-dragging" : ""} ${readOnly ? "is-readonly" : ""}`} onDragOver={(event) => { event.preventDefault(); if (!readOnly) setDragging(true); }} onDragLeave={() => setDragging(false)} onDrop={(event) => { event.preventDefault(); setDragging(false); if (!readOnly) accept(event.dataTransfer.files[0]); }}>
     <div className="upload-panel-top"><div><div className="eyebrow"><CloudArrowUp size={14} weight="bold" /> DOCUMENT INTAKE</div><h2>把一份年报，变成一份研究判断。</h2><p>上传上市公司 PDF 年报，四个专职 Agent 将提取指标、识别风险并生成可溯源投研报告。</p></div><div className="upload-stat"><span className="stat-number">01</span><span className="stat-label">single PDF<br />per analysis</span></div></div>
     <div className="upload-dropzone" role="button" tabIndex={readOnly ? -1 : 0} aria-disabled={readOnly} onKeyDown={(event) => { if ((event.key === "Enter" || event.key === " ") && !file) { event.preventDefault(); if (readOnly) onRequireLogin(); else inputRef.current?.click(); } }} onClick={() => { if (readOnly) onRequireLogin(); else if (!file) inputRef.current?.click(); }}><input ref={inputRef} disabled={readOnly} type="file" accept="application/pdf,.pdf" className="hidden-input" onChange={(event) => accept(event.target.files?.[0])} />{file ? <div className="selected-file"><div className="file-symbol"><FileText size={23} weight="bold" /></div><div className="selected-file-info"><strong>{file.name}</strong><span>{(file.size / 1024 / 1024).toFixed(2)} MB · PDF document</span></div><button aria-label="移除文件" className="clear-file" onClick={(event) => { event.stopPropagation(); onClear(); }}><X size={18} /></button></div> : <div className="dropzone-empty"><div className="upload-orbit"><CloudArrowUp size={25} weight="light" /></div><div><strong>{readOnly ? "登录后上传年报" : "拖拽年报至此"}</strong><span>{readOnly ? "当前为只读预览模式" : "或点击从本地选择 PDF"}</span></div><div className="dropzone-hint">最大 50 MB · 仅处理用户上传文件</div></div>}</div>
@@ -384,9 +389,46 @@ function MetricCards({ report }: { report?: ReportData }) {
   return <section className="metrics-section"><div className="section-heading metrics-heading"><div><div className="eyebrow muted-eyebrow"><ChartLineUp size={14} weight="bold" /> KEY METRICS</div><h2>核心财务指标</h2><p>从结构化 JSON 提取，可直接用于图表渲染。</p></div><span className="metric-count">{String(entries.length).padStart(2, "0")} / 06</span></div><div className="metrics-grid">{entries.length === 0 ? <div className="empty-metric">任务完成后，核心指标会显示在这里。</div> : entries.map(([key, value], index) => { const objectValue = typeof value === "object" && value !== null ? value as Record<string, unknown> : null; const yoy = typeof objectValue?.yoy === "string" ? objectValue.yoy : typeof objectValue?.["同比变化"] === "string" ? objectValue["同比变化"] as string : undefined; const source = Array.isArray(objectValue?.sources) && objectValue.sources[0] && typeof objectValue.sources[0] === "object" ? objectValue.sources[0] as Record<string, unknown> : null; return <div key={key} className={`metric-card ${index === 0 ? "metric-primary" : ""}`}><div className="metric-card-top"><span>{key}</span><span className="metric-index">0{index + 1}</span></div><div className="metric-value">{metricLabel(value)}</div>{yoy ? <div className="metric-change"><ArrowUpRight size={14} />同比 {yoy}</div> : null}<div className="metric-source">{source?.page ? `来源 第 ${source.page} 页` : "年报结构化字段"}</div></div>; })}</div></section>;
 }
 
+function metricUnit(key: string, value: unknown): string {
+  if (value && typeof value === "object") {
+    const unit = (value as Record<string, unknown>).unit;
+    if (typeof unit === "string" && unit.trim()) return unit.trim();
+  }
+  const text = `${key} ${typeof value === "string" ? value : JSON.stringify(value ?? "")}`;
+  if (/%|率|同比|环比|margin|ratio|growth/i.test(text)) return "%";
+  if (/亿|万元|元|金额|收入|利润|现金流|revenue|income|profit|cash|amount/i.test(text)) return "金额";
+  if (/人|户|家|count|数量/i.test(text)) return "数量";
+  return "其他";
+}
+
 function ChartsPanel({ report }: { report?: ReportData }) {
-  const chartData = useMemo(() => Object.entries(report?.metrics ?? {}).map(([name, value]) => ({ name: name.length > 7 ? `${name.slice(0, 7)}…` : name, value: metricNumber(value) })).filter((item): item is { name: string; value: number } => item.value !== null), [report]);
-  return <section className="charts-panel"><div className="section-heading"><div><div className="eyebrow muted-eyebrow"><ChartLineUp size={14} weight="bold" /> VISUAL ANALYSIS</div><h2>指标分布与曲线</h2><p>基于后端返回的 metrics 自动生成，缺失值不会被补造。</p></div><div className="chart-legend"><span><i className="legend-bar" />指标值</span><span><i className="legend-line" />趋势线</span></div></div>{chartData.length < 2 ? <div className="chart-empty"><ChartLineUp size={24} /><span>至少需要两个可识别的数值指标才能绘制图表。</span></div> : <div className="charts-grid"><div className="chart-wrap"><div className="chart-label">指标分布</div><ResponsiveContainer width="100%" height={245}><BarChart data={chartData} margin={{ top: 12, right: 10, left: -18, bottom: 0 }}><defs><linearGradient id="metricBarGradient" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#4da3ff" /><stop offset="100%" stopColor="#6fd7b2" /></linearGradient></defs><CartesianGrid stroke="#e7edf0" vertical={false} /><XAxis dataKey="name" tick={{ fontSize: 10, fill: "#7b8790" }} axisLine={false} tickLine={false} /><YAxis tick={{ fontSize: 10, fill: "#7b8790" }} axisLine={false} tickLine={false} /><Tooltip cursor={{ fill: "#f4f7f8" }} contentStyle={{ border: "1px solid #e0e7eb", borderRadius: 12, fontSize: 12, boxShadow: "0 12px 34px rgba(22, 40, 50, .08)" }} /><Bar dataKey="value" fill="url(#metricBarGradient)" radius={[6, 6, 2, 2]} /></BarChart></ResponsiveContainer></div><div className="chart-wrap"><div className="chart-label">数值曲线</div><ResponsiveContainer width="100%" height={245}><LineChart data={chartData} margin={{ top: 12, right: 10, left: -18, bottom: 0 }}><CartesianGrid stroke="#e7edf0" vertical={false} /><XAxis dataKey="name" tick={{ fontSize: 10, fill: "#7b8790" }} axisLine={false} tickLine={false} /><YAxis tick={{ fontSize: 10, fill: "#7b8790" }} axisLine={false} tickLine={false} /><Tooltip cursor={{ stroke: "#b9d7d2", strokeDasharray: "4 4" }} contentStyle={{ border: "1px solid #e0e7eb", borderRadius: 12, fontSize: 12, boxShadow: "0 12px 34px rgba(22, 40, 50, .08)" }} /><Line type="monotone" dataKey="value" stroke="#15242c" strokeWidth={2.5} dot={{ r: 4, fill: "#54bba8", stroke: "#ffffff", strokeWidth: 2 }} activeDot={{ r: 6, fill: "#4da3ff", stroke: "#ffffff", strokeWidth: 2 }} /></LineChart></ResponsiveContainer></div></div>}</section>;
+  const grouped = useMemo(() => {
+    const groups: Record<string, Array<{ name: string; value: number }>> = {};
+    Object.entries(report?.metrics ?? {}).forEach(([name, value]) => {
+      const numeric = metricNumber(value);
+      if (numeric === null) return;
+      const unit = metricUnit(name, value);
+      (groups[unit] ??= []).push({ name: name.length > 7 ? `${name.slice(0, 7)}…` : name, value: numeric });
+    });
+    return groups;
+  }, [report]);
+  const units = useMemo(() => Object.keys(grouped), [grouped]);
+  const [unit, setUnit] = useState("");
+  useEffect(() => {
+    if (!units.includes(unit)) setUnit(units[0] ?? "");
+  }, [unit, units]);
+  const chartData = grouped[unit] ?? [];
+
+  return <section className="charts-panel">
+    <div className="section-heading">
+      <div><div className="eyebrow muted-eyebrow"><ChartLineUp size={14} weight="bold" /> VISUAL ANALYSIS</div><h2>指标分布与曲线</h2><p>{units.length > 1 ? `按单位分组展示，当前为“${unit || "其他"}”；避免亿元、百分比等混合同轴。` : "基于后端返回的 metrics 自动生成，缺失值不会被补造。"}</p></div>
+      <div className="chart-tools">
+        {units.length > 1 && <label className="chart-unit">单位<select value={unit} onChange={(event) => setUnit(event.target.value)}>{units.map((item) => <option key={item} value={item}>{item}</option>)}</select></label>}
+        <div className="chart-legend"><span><i className="legend-bar" />指标值</span><span><i className="legend-line" />趋势线</span></div>
+      </div>
+    </div>
+    {chartData.length < 2 ? <div className="chart-empty"><ChartLineUp size={24} /><span>{units.length > 1 ? `“${unit}”单位下至少需要两个数值指标才能绘图，完整指标见上方卡片。` : "至少需要两个可识别的数值指标才能绘制图表。"}</span></div> : <div className="charts-grid"><div className="chart-wrap"><div className="chart-label">指标分布</div><ResponsiveContainer width="100%" height={245}><BarChart data={chartData} margin={{ top: 12, right: 10, left: -18, bottom: 0 }}><defs><linearGradient id="metricBarGradient" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#4da3ff" /><stop offset="100%" stopColor="#6fd7b2" /></linearGradient></defs><CartesianGrid stroke="#e7edf0" vertical={false} /><XAxis dataKey="name" tick={{ fontSize: 10, fill: "#7b8790" }} axisLine={false} tickLine={false} /><YAxis tick={{ fontSize: 10, fill: "#7b8790" }} axisLine={false} tickLine={false} /><Tooltip cursor={{ fill: "#f4f7f8" }} contentStyle={{ border: "1px solid #e0e7eb", borderRadius: 12, fontSize: 12, boxShadow: "0 12px 34px rgba(22, 40, 50, .08)" }} /><Bar dataKey="value" fill="url(#metricBarGradient)" radius={[6, 6, 2, 2]} /></BarChart></ResponsiveContainer></div><div className="chart-wrap"><div className="chart-label">数值曲线</div><ResponsiveContainer width="100%" height={245}><LineChart data={chartData} margin={{ top: 12, right: 10, left: -18, bottom: 0 }}><CartesianGrid stroke="#e7edf0" vertical={false} /><XAxis dataKey="name" tick={{ fontSize: 10, fill: "#7b8790" }} axisLine={false} tickLine={false} /><YAxis tick={{ fontSize: 10, fill: "#7b8790" }} axisLine={false} tickLine={false} /><Tooltip cursor={{ stroke: "#b9d7d2", strokeDasharray: "4 4" }} contentStyle={{ border: "1px solid #e0e7eb", borderRadius: 12, fontSize: 12, boxShadow: "0 12px 34px rgba(22, 40, 50, .08)" }} /><Line type="monotone" dataKey="value" stroke="#237b91" strokeWidth={2.5} dot={{ r: 3, fill: "#237b91" }} activeDot={{ r: 5 }} /></LineChart></ResponsiveContainer></div></div>}
+  </section>;
 }
 
 function RiskInsights({ report }: { report?: ReportData }) {
@@ -467,13 +509,24 @@ export default function HomePage() {
     setAgents(EMPTY_AGENTS); setOutputs({}); setError(""); setConnection("idle");
   }, []);
 
-  const applyStatus = useCallback((next: Status) => {
+  const applyStatus = useCallback((next: Status, failedAgent?: AgentKey) => {
     setStatus(next);
     setAgents(() => {
       const order: Status[] = ["parsing", "finance_analyzing", "risk_analyzing", "summary_finish"];
       const activeIndex = order.indexOf(next);
       const nextAgents = { ...EMPTY_AGENTS };
-      AGENTS.forEach((agent) => { const agentIndex = order.indexOf(agent.activeWhen); const errored = next === "error" && agentIndex === Math.max(activeIndex, 0); nextAgents[agent.key] = { status: errored ? "error" : next === "summary_finish" || agentIndex < activeIndex ? "done" : agentIndex === activeIndex ? "running" : "idle", label: errored ? "处理异常" : next === "summary_finish" || agentIndex < activeIndex ? "已完成" : agentIndex === activeIndex ? "运行中" : agentIndex > activeIndex ? "等待前置 Agent" : "等待任务" }; });
+      AGENTS.forEach((agent) => {
+        const agentIndex = order.indexOf(agent.activeWhen);
+        if (next === "error") {
+          const isFailed = failedAgent !== undefined ? agent.key === failedAgent : false;
+          nextAgents[agent.key] = { status: isFailed ? "error" : "idle", label: isFailed ? "处理异常" : "已停止" };
+          return;
+        }
+        nextAgents[agent.key] = {
+          status: next === "summary_finish" || agentIndex < activeIndex ? "done" : agentIndex === activeIndex ? "running" : "idle",
+          label: next === "summary_finish" || agentIndex < activeIndex ? "已完成" : agentIndex === activeIndex ? "运行中" : agentIndex > activeIndex ? "等待前置 Agent" : "等待任务",
+        };
+      });
       return nextAgents;
     });
   }, []);
@@ -514,7 +567,7 @@ export default function HomePage() {
     const stream = new EventSource(`${apiBaseUrl()}/stream/${taskId}${replayQuery}`); eventSource.current = stream;
     const parse = (event: MessageEvent) => { try { return JSON.parse(event.data) as Record<string, unknown>; } catch { return {}; } };
     const rememberEvent = (event: Event) => { const id = (event as MessageEvent).lastEventId; if (id) lastEventIdRef.current = id; };
-    stream.addEventListener("status", (event) => { rememberEvent(event); const payload = parse(event as MessageEvent); if (typeof payload.status === "string") { const nextStatus = payload.status as Status; applyStatus(nextStatus); syncTaskSummary(taskId, nextStatus, payload.error ? String(payload.error) : undefined); } if (payload.error) setError(String(payload.error)); if (payload.status === "summary_finish" || payload.status === "error") { void loadResult(taskId); setConnection("idle"); stream.close(); } });
+    stream.addEventListener("status", (event) => { rememberEvent(event); const payload = parse(event as MessageEvent); if (typeof payload.status === "string") { const nextStatus = payload.status as Status; const failedAgent = typeof payload.agent === "string" && AGENTS.some((item) => item.key === payload.agent) ? payload.agent as AgentKey : undefined; applyStatus(nextStatus, failedAgent); syncTaskSummary(taskId, nextStatus, payload.error ? String(payload.error) : undefined); } if (payload.error) setError(String(payload.error)); if (payload.status === "summary_finish" || payload.status === "error") { void loadResult(taskId); setConnection("idle"); stream.close(); } });
      stream.addEventListener("agent", (event) => { rememberEvent(event); const payload = parse(event as MessageEvent); const key = payload.agent as string; const text = formatAgentOutput(payload.output); if (!key) return; enqueueOutput(key, text); });
     stream.addEventListener("warning", (event) => { rememberEvent(event); const payload = parse(event as MessageEvent); if (payload.message) setError(String(payload.message)); });
     stream.onerror = () => { stream.close(); if (activeTaskRef.current !== taskId) return; if (retry < 1) { setConnection("reconnecting"); setTimeout(() => subscribeRef.current(taskId, retry + 1), 1200); } else { setConnection("disconnected"); setError("实时连接已断开，请点击右上角刷新任务状态重试"); } };
@@ -528,6 +581,18 @@ export default function HomePage() {
     try { const loaded = await loadResult(task.id); if (loaded.status !== "summary_finish" && loaded.status !== "error") subscribe(task.id); } catch (cause) { setError(cause instanceof Error ? cause.message : "任务加载失败"); }
   };
   const newAnalysis = () => { if (!isAuthenticated && !isGuest) { window.location.assign("/login"); return; } closeStream(); setArchiveOpen(false); setSelected(null); setResult(undefined); setFile(null); setStatus("pending"); resetPipeline(); };
+  useEffect(() => {
+    const onShortcut = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
+        event.preventDefault();
+        newAnalysis();
+      }
+    };
+    window.addEventListener("keydown", onShortcut);
+    return () => window.removeEventListener("keydown", onShortcut);
+    // newAnalysis only uses stable setters and closeStream; keep this listener mounted once per auth state.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAuthenticated, isGuest]);
   const openArchive = () => { if (isGuest) { setError("游客体验不保存历史记录，注册或登录后即可使用研究档案"); return; } if (!isAuthenticated) { window.location.assign("/login"); return; } closeStream(); setArchiveOpen(true); setError(""); setSidebarOpen(false); };
   const openCurrent = () => { setArchiveOpen(false); setSidebarOpen(false); };
   const loadExample = async (report: OfficialReport) => {
@@ -575,5 +640,5 @@ export default function HomePage() {
   useEffect(() => { if (authReady && isAuthenticated && !isGuest) void loadTasks(); return closeStream; }, [authReady, isAuthenticated, isGuest, closeStream, loadTasks]);
   if (!authReady) return <main className="auth-loading"><div className="auth-loading-dot" />正在验证登录状态…</main>;
   const logout = () => { closeStream(); clearAccessToken(); window.location.assign("/login"); };
-  return <main className="app-shell"><ResearchSidebar tasks={tasks} selectedId={selected?.id} archiveOpen={archiveOpen} open={sidebarOpen} readOnly={!isAuthenticated && !isGuest} guestMode={isGuest} onSelect={chooseTask} onNew={newAnalysis} onOpenArchive={openArchive} onOpenCurrent={openCurrent} onClose={() => setSidebarOpen(false)} onLogout={logout} onLogin={() => window.location.assign("/login")} /><div className="main-column"><header className="topbar no-print"><div className="topbar-inner"><button aria-label="打开历史任务" className="mobile-menu-button" onClick={() => setSidebarOpen(true)}><SidebarSimple size={20} /></button><div className="topbar-context"><div className="topbar-kicker"><span className="kicker-line" /> AI 财报多 Agent 投研分析平台</div><h1>{archiveOpen ? "统一管理你的研究判断" : headline}</h1></div><div className="topbar-actions">{isAuthenticated ? selected && !archiveOpen && <><StatusChip status={status} /><button aria-label="刷新任务" className="icon-button" onClick={() => void refresh()}><ArrowClockwise size={18} /></button></> : <button className="topbar-login-button" onClick={() => window.location.assign("/login")}><SignIn size={16} />登录 / 注册</button>}</div></div></header><div className="page-content">{!isAuthenticated && !isGuest && <div className="readonly-banner no-print"><SealCheck size={17} weight="fill" /><div><strong>只读预览模式</strong><span>登录后才能上传年报、运行 Agent 和保存研究档案。</span></div><button onClick={() => window.location.assign("/login")}><SignIn size={15} />登录</button></div>}{isGuest && <div className="guest-banner no-print"><SealCheck size={17} weight="fill" /><div><strong>游客体验模式</strong><span>可以运行上传和示例分析，本次任务不会保存到历史记录。</span></div><button onClick={() => { clearAccessToken(); window.location.assign("/login"); }}><SignIn size={15} />登录并保存</button></div>}{error && <div className="error-banner no-print"><WarningCircle size={18} weight="fill" /><span>{error}</span><button aria-label="关闭错误提示" onClick={() => setError("")}><X size={15} /></button></div>}{archiveOpen ? <ResearchArchive tasks={tasks} onSelect={chooseTask} onRefresh={() => void loadTasks()} /> : <>{!selected && <UploadPanel file={file} busy={busy} readOnly={!isAuthenticated && !isGuest} onFile={setFile} onUpload={upload} onClear={() => setFile(null)} onRequireLogin={() => window.location.assign("/login")} />}{selected && <AgentPipeline currentStatus={status} agents={agents} />}{!selected && <OfficialReportsPanel onLoadExample={loadExample} loadingPath={exampleLoadingPath} readOnly={!isAuthenticated && !isGuest} onRequireLogin={() => window.location.assign("/login")} />}<div className="stream-grid"><OutputStream outputs={outputs} connection={connection} /><Snapshot result={result} status={status} /></div><MetricCards report={result?.report_json} /><ChartsPanel report={result?.report_json} /><IndustryComparison report={result?.report_json} /><RiskInsights report={result?.report_json} /><ReportPreview result={result} /></>}</div></div></main>;
+  return <main className="app-shell"><ResearchSidebar tasks={tasks} selectedId={selected?.id} archiveOpen={archiveOpen} open={sidebarOpen} readOnly={!isAuthenticated && !isGuest} guestMode={isGuest} onSelect={chooseTask} onNew={newAnalysis} onOpenArchive={openArchive} onOpenCurrent={openCurrent} onClose={() => setSidebarOpen(false)} onLogout={logout} onLogin={() => window.location.assign("/login")} /><div className="main-column"><header className="topbar no-print"><div className="topbar-inner"><button aria-label="打开历史任务" className="mobile-menu-button" onClick={() => setSidebarOpen(true)}><SidebarSimple size={20} /></button><div className="topbar-context"><div className="topbar-kicker"><span className="kicker-line" /> AI 财报多 Agent 投研分析平台</div><h1>{archiveOpen ? "统一管理你的研究判断" : headline}</h1></div><div className="topbar-actions">{isAuthenticated ? selected && !archiveOpen && <><StatusChip status={status} /><button aria-label="刷新任务" className="icon-button" onClick={() => void refresh()}><ArrowClockwise size={18} /></button></> : <button className="topbar-login-button" onClick={() => window.location.assign("/login")}><SignIn size={16} />登录 / 注册</button>}</div></div></header><div className="page-content">{!isAuthenticated && !isGuest && <div className="readonly-banner no-print"><SealCheck size={17} weight="fill" /><div><strong>只读预览模式</strong><span>登录后才能上传年报、运行 Agent 和保存研究档案。</span></div><button onClick={() => window.location.assign("/login")}><SignIn size={15} />登录</button></div>}{isGuest && <div className="guest-banner no-print"><SealCheck size={17} weight="fill" /><div><strong>游客体验模式</strong><span>可以运行上传和示例分析，本次任务不会保存到历史记录。</span></div><button onClick={() => { clearAccessToken(); window.location.assign("/login"); }}><SignIn size={15} />登录并保存</button></div>}{error && <div className="error-banner no-print" role="alert"><WarningCircle size={18} weight="fill" /><span>{error}</span><button aria-label="关闭错误提示" onClick={() => setError("")}><X size={15} /></button></div>}{archiveOpen ? <ResearchArchive tasks={tasks} onSelect={chooseTask} onRefresh={() => void loadTasks()} /> : <>{!selected && <UploadPanel file={file} busy={busy} readOnly={!isAuthenticated && !isGuest} onFile={setFile} onUpload={upload} onClear={() => setFile(null)} onRequireLogin={() => window.location.assign("/login")} onInvalid={setError} />}{selected && <AgentPipeline currentStatus={status} agents={agents} />}{!selected && <OfficialReportsPanel onLoadExample={loadExample} loadingPath={exampleLoadingPath} readOnly={!isAuthenticated && !isGuest} onRequireLogin={() => window.location.assign("/login")} />}<div className="stream-grid"><OutputStream outputs={outputs} connection={connection} /><Snapshot result={result} status={status} /></div><MetricCards report={result?.report_json} /><ChartsPanel report={result?.report_json} /><IndustryComparison report={result?.report_json} /><RiskInsights report={result?.report_json} /><ReportPreview result={result} /></>}</div></div></main>;
 }
