@@ -2,8 +2,57 @@
 
 import { useEffect, useState } from "react";
 import { CaretRight, DownloadSimple, FileText, Plus, X } from "@phosphor-icons/react";
+import { authFetch, getAccessToken } from "../../lib/auth";
 
 type PageData = { title: string; sub: string; body: string };
+
+type Status = "pending" | "parsing" | "finance_analyzing" | "risk_analyzing" | "summary_finish" | "error";
+type TaskSummary = { id: string; filename: string; status: Status; created_at?: string; exampleId?: string };
+type Source = { page?: number; chunk_id?: string };
+type ReportData = { company?: string; period?: string; metrics?: Record<string, unknown>; risks?: Array<{ level?: string; title?: string; evidence?: string; suggestion?: string; sources?: Source[] }>; summary?: string; sources?: Source[] };
+type TaskResult = { task_id: string; status: Status; report_markdown?: string; report_json?: ReportData; error?: string };
+const EXAMPLE_PDFS: Record<string, string> = { alibaba: "/examples/alibaba-fy2025-annual-report.pdf", tencent: "/examples/tencent-2025-annual-report.pdf", baidu: "/examples/baidu-2025-annual-report.pdf" };
+const configuredApiBase = process.env.NEXT_PUBLIC_API_BASE_URL?.trim();
+const isLocalApiBase = !configuredApiBase || /^(https?:\/\/)?(localhost|127\.0\.0\.1)(:\d+)?\/?$/i.test(configuredApiBase);
+const API_BASE = process.env.VERCEL && isLocalApiBase ? "https://finscope-backend-637y.onrender.com" : configuredApiBase ?? "http://localhost:8000";
+function apiBaseUrl() { return typeof window !== "undefined" ? window.__FINSCOPE_CONFIG__?.apiBase?.replace(/\/$/, "") || API_BASE : API_BASE; }
+declare global { interface Window { __FINSCOPE_CONFIG__?: { apiBase?: string } } }
+function metricNumber(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "object" && value !== null) {
+    const object = value as Record<string, unknown>;
+    for (const key of ["数值", "金额", "本期", "当前值", "amount", "number", "current", "value"]) {
+      const candidate = object[key];
+      if (typeof candidate === "number" && Number.isFinite(candidate)) return candidate;
+      if (typeof candidate === "string") { const match = candidate.match(/[-+]?\d[\d,]*(?:\.\d+)?/); if (match) return Number(match[0].replaceAll(",", "")); }
+    }
+  }
+  if (typeof value === "string") { const match = value.match(/^\s*[-+]?\d[\d,]*(?:\.\d+)?/); if (match) return Number(match[0].replaceAll(",", "")); }
+  return null;
+}
+function metricUnit(key: string, value: unknown): string {
+  if (value && typeof value === "object") { const unit = (value as Record<string, unknown>).unit; if (typeof unit === "string" && unit.trim()) return unit.trim(); }
+  const text = `${key} ${typeof value === "string" ? value : JSON.stringify(value ?? "")}`;
+  if (/%|率|同比|环比|margin|ratio|growth/i.test(text)) return "%";
+  if (/亿|万元|元|金额|收入|利润|现金流|revenue|income|profit|cash|amount/i.test(text)) return "亿元";
+  return "";
+}
+function metricDelta(value: unknown): { text: string; down: boolean } {
+  if (value && typeof value === "object") { const object = value as Record<string, unknown>; const raw = object.yoy ?? object["同比变化"] ?? object["同比"]; if (typeof raw === "string" && raw.trim()) return { text: `同比 ${raw}`, down: raw.includes("-") || raw.includes("下降") }; }
+  return { text: "结构化指标", down: false };
+}
+function firstPage(value: unknown): number | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const sources = (value as Record<string, unknown>).sources;
+  if (!Array.isArray(sources) || !sources[0] || typeof sources[0] !== "object") return undefined;
+  const page = (sources[0] as Record<string, unknown>).page;
+  return typeof page === "number" ? page : undefined;
+}
+function riskLevel(value?: string): "high" | "medium" | "low" {
+  if (value && /高|high/i.test(value)) return "high";
+  if (value && /低|low/i.test(value)) return "low";
+  return "medium";
+}
 type Risk = { level: "high" | "medium" | "low"; title: string; desc: string; page: number };
 
 const PAGE_DATA: Record<number, PageData> = {
@@ -61,6 +110,10 @@ export default function WorkspacePage() {
   const [tab, setTab] = useState<"pdf" | "chain">("pdf");
   const [modal, setModal] = useState(false);
   const [toast, setToast] = useState("");
+  const [live, setLive] = useState<TaskResult | undefined>();
+  const [liveTask, setLiveTask] = useState<TaskSummary | null>(null);
+  const [pdfUrl, setPdfUrl] = useState("");
+  const [status, setStatus] = useState<Status>("summary_finish");
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -74,6 +127,30 @@ export default function WorkspacePage() {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
+  useEffect(() => {
+    const token = getAccessToken();
+    if (!token) return;
+    void (async () => {
+      try {
+        const response = await authFetch(`${apiBaseUrl()}/tasks`);
+        if (!response.ok) return;
+        const list = (await response.json()) as TaskSummary[];
+        if (!list[0]) return;
+        setLiveTask(list[0]);
+        const detail = await authFetch(`${apiBaseUrl()}/tasks/${list[0].id}`);
+        if (!detail.ok) return;
+        const data = (await detail.json()) as TaskResult;
+        setLive(data);
+        setStatus(data.status);
+        if (list[0].exampleId && EXAMPLE_PDFS[list[0].exampleId]) setPdfUrl(EXAMPLE_PDFS[list[0].exampleId]);
+        const sourcePage = data.report_json?.sources?.find((source) => typeof source.page === "number")?.page;
+        if (sourcePage) setPage(sourcePage);
+      } catch {
+        /* keep demo view when API is not configured */
+      }
+    })();
+  }, []);
+
   function locate(nextPage: number) {
     setPage(nextPage);
     setToast(`已定位到第 ${nextPage} 页`);
@@ -81,6 +158,20 @@ export default function WorkspacePage() {
   }
 
   const current = PAGE_DATA[page] ?? PAGE_DATA[42];
+  const report = live?.report_json;
+  const company = report?.company || "Nova 零售集团";
+  const summary = report?.summary || "收入增长 8.4%，主要由海外与会员业务贡献，国内同店增速仅 2.1%。毛利率改善 1.2 个百分点，但销售费用率上升 1.8 个百分点，利润弹性受限。经营现金流增长 12.6%，现金转换率 1.12，现金流质量好于利润表表现。";
+  const displayKpis = report?.metrics && Object.keys(report.metrics).length > 0
+    ? Object.entries(report.metrics).slice(0, 4).map(([key, value]) => {
+        const numeric = metricNumber(value);
+        const delta = metricDelta(value);
+        return { label: key, value: numeric === null ? "—" : numeric.toLocaleString("zh-CN"), unit: metricUnit(key, value), delta: delta.text, down: delta.down, page: firstPage(value) ?? 42 };
+      })
+    : KPIS;
+  const displayRisks = report?.risks && report.risks.length > 0
+    ? report.risks.map((risk) => ({ level: riskLevel(risk.level), title: risk.title || "待确认风险", desc: risk.evidence || risk.suggestion || "暂无证据摘要", page: risk.sources?.[0]?.page ?? 42 }))
+    : RISKS;
+  const totalPages = pdfUrl ? "" : "128";
 
   return (
     <div className="fs2-app">
@@ -97,7 +188,7 @@ export default function WorkspacePage() {
         </div>
         <div className="fs2-side-section"><span>最近</span><span>FY2025</span></div>
         <div className="fs2-task-list">
-          <button className="fs2-task active"><strong>Nova 零售集团 · FY2025</strong><span><i>已完成</i><i>02:41</i></span></button>
+          <button className="fs2-task active"><strong>{liveTask?.filename || "Nova 零售集团 · FY2025"}</strong><span><i>{status === "summary_finish" ? "已完成" : status === "error" ? "异常" : "进行中"}</i><i>{live?.report_json?.period || "02:41"}</i></span></button>
           <button className="fs2-task" onClick={() => setToast("当前为 Nova 零售演示任务")}><strong>Horizon 制造 · FY2024</strong><span><i>已完成</i><i>03:08</i></span></button>
           <button className="fs2-task" onClick={() => setToast("当前为 Nova 零售演示任务")}><strong>Atlas 物流 · FY2024</strong><span><i>异常</i><i>01:12</i></span></button>
         </div>
@@ -108,9 +199,9 @@ export default function WorkspacePage() {
       </aside>
 
       <header className="fs2-topbar">
-        <div className="fs2-crumbs"><span>工作台</span><b>/</b><span>当前分析</span><b>/</b><strong>Nova 零售集团</strong></div>
+        <div className="fs2-crumbs"><span>工作台</span><b>/</b><span>当前分析</span><b>/</b><strong>{liveTask?.filename || "Nova 零售集团 · FY2025"}</strong></div>
         <div className="fs2-top-actions">
-          <span className="fs2-status"><i /> 已完成 · 02:41</span>
+          <span className="fs2-status"><i /> {status === "summary_finish" ? "已完成" : status === "error" ? "异常" : "运行中"} · {live?.report_json?.period || "FY2025"}</span>
           <button className="fs2-btn" onClick={() => window.print()}><DownloadSimple size={12} /> 导出笔记</button>
           <button className="fs2-btn primary" onClick={() => setModal(true)}><Plus size={12} weight="bold" /> 新建分析</button>
           <div className="fs2-avatar">LS</div>
@@ -121,12 +212,12 @@ export default function WorkspacePage() {
         <div className="fs2-content">
           <section className="fs2-report-head">
             <div>
-              <div className="fs2-eyebrow">EQUITY RESEARCH / FY2025</div>
-              <h1>Nova 零售集团</h1>
+              <div className="fs2-eyebrow">EQUITY RESEARCH / {live?.report_json?.period || "FY2025"}</div>
+              <h1>{company}</h1>
               <p className="fs2-sub">收入增长放缓，但现金流质量改善</p>
               <div className="fs2-meta">
-                <span className="fs2-pill fs2-demo-pill">演示数据</span>
-                <span>FY2025 年报</span><span>·</span><span>4 Agents</span><span>·</span><span>生成于 2026-10-27 14:32</span>
+                <span className="fs2-pill fs2-demo-pill">{live ? "LIVE REPORT" : "演示数据"}</span>
+                <span>{live?.report_json?.period || "FY2025"} 年报</span><span>·</span><span>4 Agents</span><span>·</span><span>{liveTask?.filename || "生成于 2026-10-27 14:32"}</span>
               </div>
             </div>
             <div className="fs2-head-right">
@@ -152,11 +243,11 @@ export default function WorkspacePage() {
 
           <section className="fs2-thesis">
             <h2>研究摘要</h2>
-            <p>收入增长 8.4%，主要由海外与会员业务贡献，国内同店增速仅 2.1%。毛利率改善 1.2 个百分点，但销售费用率上升 1.8 个百分点，利润弹性受限。经营现金流增长 12.6%，现金转换率 1.12，现金流质量好于利润表表现。<button className="fs2-citation" onClick={() => locate(42)}>p.42 ↗</button></p>
+            <p>{summary}<button className="fs2-citation" onClick={() => locate(42)}>p.42 ↗</button></p>
           </section>
 
           <section className="fs2-kpis" aria-label="核心指标">
-            {KPIS.map((kpi, index) => (
+            {displayKpis.map((kpi, index) => (
               <button className="fs2-kpi" onClick={() => locate(kpi.page)} key={kpi.label}>
                 <span className="fs2-k-label">{kpi.label} <em>0{index + 1}</em></span>
                 <span className="fs2-k-value">{kpi.value}<small>{kpi.unit}</small></span>
@@ -232,7 +323,7 @@ export default function WorkspacePage() {
           <section className="fs2-panel">
             <div className="fs2-panel-head"><div><h3>风险与跟踪</h3><p>每条风险保留原文页码，点击右侧可直接定位。</p></div><span className="fs2-mono">03 SIGNALS</span></div>
             <div className="fs2-risk-list">
-              {RISKS.map((risk) => (
+              {displayRisks.map((risk) => (
                 <div className={`fs2-risk ${risk.level}`} key={risk.title} onClick={() => locate(risk.page)}>
                   <span className="fs2-sev" />
                   <div><div className="fs2-r-title">{risk.title}</div><div className="fs2-r-desc">{risk.desc}</div></div>
@@ -255,13 +346,14 @@ export default function WorkspacePage() {
 
       <aside className="fs2-evidence">
         <div className="fs2-evidence-head">
-          <div className="fs2-eh-row"><h2>原文与证据</h2><span className="fs2-pageno">PAGE {page} / 128</span></div>
+          <div className="fs2-eh-row"><h2>原文与证据</h2><span className="fs2-pageno">PAGE {page}{totalPages ? ` / ${totalPages}` : ""}</span></div>
           <div className="fs2-tabs"><button className={`fs2-tab ${tab === "pdf" ? "active" : ""}`} onClick={() => setTab("pdf")}>原文</button><button className={`fs2-tab ${tab === "chain" ? "active" : ""}`} onClick={() => setTab("chain")}>证据链</button></div>
         </div>
         {tab === "pdf" ? <div>
           <div className="fs2-pdf-wrap">
             <div className="fs2-pdf-toolbar"><span>FY2025 ANNUAL REPORT</span><span className="fs2-zoom">− 100% +</span></div>
-            <div className="fs2-pdf-page"><div className="fs2-watermark">DEMO</div><div className="fs2-doc-kicker">CONSOLIDATED STATEMENT OF CASH FLOWS</div><h3>{current.title}</h3><div className="fs2-doc-sub">{current.sub}</div><p>截至 2025 年 12 月 31 日止年度，集团经营活动产生的现金流量净额为：</p><p className="fs2-highlight">{current.body}</p><p>投资活动产生的现金流量净额为人民币 (8,420) 百万元，主要用于仓储自动化、数字化系统及区域配送中心建设。</p><p>筹资活动产生的现金流量净额为人民币 (3,180) 百万元，主要包括股息支付及租赁负债偿还。</p><p>于 2025 年 12 月 31 日，集团现金及现金等价物余额为人民币 18,640 百万元。</p><div className="fs2-page-foot"><span>NOVA RETAIL GROUP</span><span>{page}</span></div></div>
+            {pdfUrl && <iframe className="fs2-pdf-frame" key={`${pdfUrl}-${page}`} src={`${pdfUrl}#page=${page}`} title={`年报第 ${page} 页`} />}
+            <div className="fs2-pdf-page" style={{ display: pdfUrl ? "none" : "block" }}><div className="fs2-watermark">DEMO</div><div className="fs2-doc-kicker">CONSOLIDATED STATEMENT OF CASH FLOWS</div><h3>{current.title}</h3><div className="fs2-doc-sub">{current.sub}</div><p>截至 2025 年 12 月 31 日止年度，集团经营活动产生的现金流量净额为：</p><p className="fs2-highlight">{current.body}</p><p>投资活动产生的现金流量净额为人民币 (8,420) 百万元，主要用于仓储自动化、数字化系统及区域配送中心建设。</p><p>筹资活动产生的现金流量净额为人民币 (3,180) 百万元，主要包括股息支付及租赁负债偿还。</p><p>于 2025 年 12 月 31 日，集团现金及现金等价物余额为人民币 18,640 百万元。</p><div className="fs2-page-foot"><span>NOVA RETAIL GROUP</span><span>{page}</span></div></div>
           </div>
           <div className="fs2-evidence-list"><div className="fs2-eh"><span>本页被引用</span><span>03 CLAIMS</span></div>{EVIDENCE.map((item) => <div className={`fs2-ev-item ${item.tone}`} key={item.title} onClick={() => locate(item.page)}><span className="fs2-ev-dot" /><div className="fs2-ev-copy"><strong>{item.title}</strong><span>{item.desc}</span><em>{item.meta}</em></div></div>)}</div>
         </div> : <div className="fs2-evidence-list" style={{ paddingTop: 18 }}>
