@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import Script from "next/script";
 import "./globals.css";
+import "./workspace.css";
 
 export const viewport = {
   width: "device-width",
